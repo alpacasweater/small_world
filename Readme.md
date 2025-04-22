@@ -4,3 +4,5 @@ small world supports transformations between ECEF, NED, ENU, WGS84 (latitude, lo
 
 TODO: EGM96 is not yet implemented.
 TODO: Ideally small_world would support a simple, low-resolution terrain elevation model. Enough to recognize a mountain. Higher resolution is generally handled by onboard sensing and doesn't provide a lot of value. (e.g. Trees are not included in terrain elevation data. That's 30m of error right off the bat.)
+
+Data files may be found at (https://earth-info.nga.mil/)
