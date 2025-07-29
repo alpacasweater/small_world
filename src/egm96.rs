@@ -40,7 +40,7 @@ impl EGM96 {
     pub fn offset(self, lat: &f32, lon: &f32) -> f32 {
         println!("(lat, lon): ({}, {})", lat, lon);
         // Find the cell of the matrix that corresponds to the input lat, lon
-        let eval_lon: f32 = if(*lon < 0.0f32){lon + 360.0f32} else{*lon};
+        let eval_lon: f32 = if *lon < 0.0f32 {lon + 360.0f32} else{*lon};
         let lb_row: usize = ((-lat + 90.0f32)/self.lat_step_deg).floor() as usize;
         let lb_col: usize = ((eval_lon)/self.lon_step_deg).floor() as usize;
         println!("(row, col): ({}, {})", lb_row, lb_col);

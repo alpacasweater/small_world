@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 byteorder = "1.5"
+
+[[example]]
+name = "geoid_offset"
+path = "examples/egm96_geoid_offset.rs"

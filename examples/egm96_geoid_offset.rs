@@ -1,9 +1,8 @@
-mod egm96;
-use egm96::EGM96;
+use small_world::egm96::EGM96;
 use std::path::Path;
 
 fn main() {
-    let path = Path::new("/Users/biggsba1/Sync copy/rust_playground/small_world/data/WW15MGH.DAC");
+    let path = Path::new("data/WW15MGH.DAC");
 
     match EGM96::new(path) {
         Ok(egm96) => {

@@ -30,20 +30,20 @@ impl GeoConversionParams {
         let nu0      = SEMIMAJOR_AXIS/(1.0 - FIRST_ECCENTRICITY_SQ*lat0.sin()*lat0.sin()).sqrt();
         let s_lat0  = lat0.sin();
         let c_lat0  = lat0.cos();
-        let s_lon0  = lon0_.sin();
-        let c_lon0  = lon0_.cos();
-        rot[0][0]     = -s_lat0*c_lon0_;
-        rot[0][1]     = -s_lat0*s_lon0_;
+        let s_lon0  = lon0.sin();
+        let c_lon0  = lon0.cos();
+        rot[0][0]     = -s_lat0*c_lon0;
+        rot[0][1]     = -s_lat0*s_lon0;
         rot[0][2]     =  c_lat0;
-        rot[1][0]     = -s_lon0_;
-        rot[1][1]     =  c_lon0_;
+        rot[1][0]     = -s_lon0;
+        rot[1][1]     =  c_lon0;
         rot[1][2]     =  0.0;
-        rot[2][0]     = -c_lat0*c_lon0_;
-        rot[2][1]     = -c_lat0*s_lon0_;
+        rot[2][0]     = -c_lat0*c_lon0;
+        rot[2][1]     = -c_lat0*s_lon0;
         rot[2][2]     = -s_lat0;
-        let x0      = (nu0 + alt0_)*c_lat0*c_lon0_;
-        let y0      = (nu0 + alt0_)*c_lat0*s_lon0_;
-        let z0      = (nu0*(1.0 - FIRST_ECCENTRICITY_SQ) + alt0_)*s_lat0;
+        let x0      = (nu0 + alt0)*c_lat0*c_lon0;
+        let y0      = (nu0 + alt0)*c_lat0*s_lon0;
+        let z0      = (nu0*(1.0 - FIRST_ECCENTRICITY_SQ) + alt0)*s_lat0;
         GeoConversionParams
         {
             lat0,
