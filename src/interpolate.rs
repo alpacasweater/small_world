@@ -3,6 +3,7 @@
 
     // Another useful implementation of bilinear and bicubic interpolation may be found in the GeographicLib library
     // Specifically, the Geoid class in GeographicLib (https://geographiclib.sourceforge.io/C++/doc/Geoid_8cpp.html)
+    // This is a good calculator for testing accuracy (https://geographiclib.sourceforge.io/cgi-bin/GeoidEval?input=-0.4667440%2C+0.0023000&option=Submit)
     
     pub fn cubic(lower: f32, upper: f32, x: f32, f: [f32; 4]) -> f32
     {
