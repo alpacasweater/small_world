@@ -87,6 +87,40 @@ let input = AltitudeSample::agl_m(120.0)?; // explicitly AGL
 let output = converter.convert_sample(point, input, VerticalFrame::Hae)?;
 ```
 
+### Minimal Conversion Matrices
+
+Assume:
+
+```rust
+use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
+
+let p = GeoPoint::new(lat, lon)?;
+let c = AltitudeConverter::new(&geoid, &terrain);
+let h = input_m;
+```
+
+Converter API (`convert_height_m`):
+
+| from \\ to | `AGL` | `MSL` | `HAE` |
+| --- | --- | --- | --- |
+| `AGL` | `h` | `c.convert_height_m(p, h, VerticalFrame::Agl, VerticalFrame::Msl)?` | `c.convert_height_m(p, h, VerticalFrame::Agl, VerticalFrame::Hae)?` |
+| `MSL` | `c.convert_height_m(p, h, VerticalFrame::Msl, VerticalFrame::Agl)?` | `h` | `c.convert_height_m(p, h, VerticalFrame::Msl, VerticalFrame::Hae)?` |
+| `HAE` | `c.convert_height_m(p, h, VerticalFrame::Hae, VerticalFrame::Agl)?` | `c.convert_height_m(p, h, VerticalFrame::Hae, VerticalFrame::Msl)?` | `h` |
+
+WGS84 local-frame API uses explicit per-frame structs (`Lla`, `Ned`, `Enu`) with friendly accessors:
+
+```rust
+use small_world::wgs84::{AltType, Enu, Lla, Ned};
+
+let origin = Lla::new(39.0, -77.0, 150.0, AltType::Wgs84);
+let enu = Enu::new(15.0, -4.0, 3.0, origin);
+let ned = Ned::new(40.0, -8.0, 6.0, origin);
+
+let _ = (enu.e(), enu.n(), enu.u(), enu.origin());
+let _ = (ned.n(), ned.e(), ned.d(), ned.origin());
+let _ = (origin.lat_deg(), origin.lon_deg(), origin.alt_m(), origin.alt_type());
+```
+
 Terrain dataset hardening options:
 
 ```rust

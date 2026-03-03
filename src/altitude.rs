@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 use crate::egm96::{EgmError, EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, TerrainError};
+use crate::wgs84::{AltType, Lla};
 
 /// Vertical reference frame for altitude values in this crate.
 ///
@@ -281,6 +282,40 @@ where
         Ok(self.convert_sample(point, sample, target_frame)?.meters)
     }
 
+    /// Converts a height sample at `point` into absolute geodetic LLA in WGS84/HAE.
+    ///
+    /// This is a high-level convenience for callers that need `Lla` directly
+    /// from explicit source frame data (`AGL`, `MSL`, or `HAE`).
+    pub fn lla_wgs84_from_height_m(
+        &self,
+        point: GeoPoint,
+        meters: f64,
+        source_frame: VerticalFrame,
+    ) -> Result<Lla, AltitudeError> {
+        let hae_m = self.convert_height_m(point, meters, source_frame, VerticalFrame::Hae)?;
+        Ok(Lla::new(
+            point.lat_deg,
+            point.lon_deg,
+            hae_m,
+            AltType::Wgs84,
+        ))
+    }
+
+    /// Typed variant of [`Self::lla_wgs84_from_height_m`] using an [`AltitudeSample`].
+    pub fn lla_wgs84_from_sample(
+        &self,
+        point: GeoPoint,
+        sample: AltitudeSample,
+    ) -> Result<Lla, AltitudeError> {
+        let hae = self.convert_sample(point, sample, VerticalFrame::Hae)?;
+        Ok(Lla::new(
+            point.lat_deg,
+            point.lon_deg,
+            hae.meters,
+            AltType::Wgs84,
+        ))
+    }
+
     pub fn hae_from_msl(
         &self,
         lat_deg: f64,
@@ -378,6 +413,8 @@ mod tests {
     use std::cell::Cell;
 
     use proptest::prelude::*;
+
+    use crate::wgs84::AltType;
 
     use super::{
         AltitudeConverter, AltitudeError, AltitudeSample, GeoPoint, GeoidProvider, Interpolation,
@@ -562,6 +599,42 @@ mod tests {
             VerticalFrame::Agl,
         );
         assert!((via_scalar.unwrap() - via_sample.unwrap().meters).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lla_wgs84_from_height_is_frame_explicit() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let lla = converter
+            .lla_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
+            .unwrap();
+        assert!((lla.lat_deg() - 10.0).abs() < 1e-12);
+        assert!((lla.lon_deg() - 20.0).abs() < 1e-12);
+        assert!((lla.alt_m() - 200.0).abs() < 1e-12);
+        assert_eq!(lla.alt_type(), AltType::Wgs84);
+    }
+
+    #[test]
+    fn lla_wgs84_from_sample_matches_scalar_helper() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let from_scalar = converter
+            .lla_wgs84_from_height_m(point, 200.0, VerticalFrame::Hae)
+            .unwrap();
+        let from_sample = converter
+            .lla_wgs84_from_sample(point, AltitudeSample::hae_m(200.0).unwrap())
+            .unwrap();
+
+        assert!((from_scalar.lat_deg() - from_sample.lat_deg()).abs() < 1e-12);
+        assert!((from_scalar.lon_deg() - from_sample.lon_deg()).abs() < 1e-12);
+        assert!((from_scalar.alt_m() - from_sample.alt_m()).abs() < 1e-12);
+        assert_eq!(from_scalar.alt_type(), from_sample.alt_type());
     }
 
     proptest! {
