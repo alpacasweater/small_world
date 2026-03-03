@@ -115,20 +115,15 @@ impl From<io::Error> for TerrainError {
 }
 
 /// Strategy for handling void (`-32768`) DEM samples.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VoidPolicy {
     /// Return an error on void samples.
+    #[default]
     Error,
     /// Treat void samples as zero meters MSL.
     Zero,
     /// Search for the nearest valid sample in the same tile up to a radius.
     NearestValid { max_radius_cells: usize },
-}
-
-impl Default for VoidPolicy {
-    fn default() -> Self {
-        Self::Error
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
