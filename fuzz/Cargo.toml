@@ -1,0 +1,27 @@
+[package]
+name = "small_world-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+small_world = { path = ".." }
+tempfile = "3.23"
+
+[[bin]]
+name = "terrain_hgt"
+path = "fuzz_targets/terrain_hgt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egm_grid"
+path = "fuzz_targets/egm_grid.rs"
+test = false
+doc = false
+bench = false

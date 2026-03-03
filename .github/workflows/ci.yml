@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  stable-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Runtime Dependency Gate
+        run: ./scripts/check_runtime_dependencies.sh
+
+      - name: Unit And Property Tests
+        run: cargo test
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Docs Build
+        run: cargo doc --no-deps
+
+      - name: Accuracy Gate (Optional Dataset)
+        run: |
+          if [[ -f data/validation/ground_msl_checkpoints.csv ]]; then
+            cargo run --example ground_msl_accuracy -- data/srtm data/validation/ground_msl_checkpoints.csv bilinear 15.0 40.0
+          else
+            echo "No data/validation/ground_msl_checkpoints.csv provided; skipping accuracy gate."
+          fi

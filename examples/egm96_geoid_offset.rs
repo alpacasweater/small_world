@@ -1,47 +1,81 @@
-use small_world::egm96::EGM96;
-use std::path::Path;
+use small_world::egm96::{EGM2008, EGM96};
 use std::env;
+use std::path::Path;
 use std::time::Instant;
 
+fn print_usage() {
+    println!("Usage:");
+    println!("  cargo run --example geoid_offset -- <egm96|egm2008> <dataset_path> <lat_deg> <lon_deg> [nearest|bilinear|bicubic]");
+    println!("Example:");
+    println!(
+        "  cargo run --example geoid_offset -- egm96 data/WW15MGH.DAC -0.466744 0.0023 bicubic"
+    );
+}
+
 fn main() {
-    env::set_var("RUST_BACKTRACE", "1");
-    let path = Path::new("data/WW15MGH.DAC");
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 5 {
+        print_usage();
+        return;
+    }
 
-    
-    let mut offset: f32 = 0.0;
-    match EGM96::new(path) {
-        Ok(egm96) => {
-            // println!("EGM96 model loaded successfully!");
-            let start = Instant::now();
-            // offset = egm96.offset_bilinear(38.6281550, 269.7791550);
-            offset = egm96.offset_bicubic(-0.4667440, 0.0023000);
-            let duration = start.elapsed();
-            println!("Time taken to load EGM96 model: {:?}, with offset {}", duration, offset);
-            // println!("Geoid height at (0, 0): {:.2} meters", egm96.read_geoid_value(0, 0).unwrap());
-            // println!("Geoid offset at (7.9322759878,	-72.2528133628) = {}", egm96.offset(7.9322759878,	-72.2528133628));
-            // println!("Geoid offset at (38.6281550, 269.7791550) = {}. Should be -31.628", egm96.offset_bilinear(38.6281550, 269.7791550));
-            // println!("Geoid offset at (-14.6212170, 305.0211140) = {}. Should be -2.969", egm96.offset_bilinear(-14.6212170, 305.0211140));
-            // println!("Geoid offset at (46.8743190, 102.4487290) = {}. Should be -43.575", egm96.offset_bilinear(46.8743190, 102.4487290));
-            // println!("Geoid offset at (-23.6174460, 133.8747120) = {}. Should be 15.871", egm96.offset_bilinear(-23.6174460, 133.8747120));
-            // println!("Geoid offset at (38.6254730, 359.9995000) = {}. Should be 50.066", egm96.offset_bilinear(38.6254730, 359.9995000));
-            // println!("Geoid offset at (-0.4667440, 0.0023000) = {}. Should be 17.329", egm96.offset_bilinear(-0.4667440, 0.0023000));
+    let model = args[1].to_lowercase();
+    let path = Path::new(&args[2]);
+    let lat: f64 = args[3]
+        .parse()
+        .expect("lat_deg must be a valid floating-point value");
+    let lon: f64 = args[4]
+        .parse()
+        .expect("lon_deg must be a valid floating-point value");
+    let interpolation = args.get(5).map(String::as_str).unwrap_or("bilinear");
 
-            // println!("Geoid offset at (38.6281550, 269.7791550) = {}. Should be -31.628", egm96.offset_bilinear2(38.6281550, 269.7791550));
-            // println!("Geoid offset at (-14.6212170, 305.0211140) = {}. Should be -2.969", egm96.offset_bilinear2(-14.6212170, 305.0211140));
-            // println!("Geoid offset at (46.8743190, 102.4487290) = {}. Should be -43.575", egm96.offset_bilinear2(46.8743190, 102.4487290));
-            // println!("Geoid offset at (-23.6174460, 133.8747120) = {}. Should be 15.871", egm96.offset_bilinear2(-23.6174460, 133.8747120));
-            // println!("Geoid offset at (38.6254730, 359.9995000) = {}. Should be 50.066", egm96.offset_bilinear2(38.6254730, 359.9995000));
-            // println!("Geoid offset at (-0.4667440, 0.0023000) = {}. Should be 17.329", egm96.offset_bilinear2(-0.4667440, 0.0023000));
-
-            // println!("Geoid offset at (38.6281550, 269.7791550) = {}. Should be -31.628", egm96.offset_bicubic(38.6281550, 269.7791550));
-            // println!("Geoid offset at (-14.6212170, 305.0211140) = {}. Should be -2.969", egm96.offset_bicubic(-14.6212170, 305.0211140));
-            // println!("Geoid offset at (46.8743190, 102.4487290) = {}. Should be -43.575", egm96.offset_bicubic(46.8743190, 102.4487290));
-            // println!("Geoid offset at (-23.6174460, 133.8747120) = {}. Should be 15.871", egm96.offset_bicubic(-23.6174460, 133.8747120));
-            // println!("Geoid offset at (38.6254730, 359.9995000) = {}. Should be 50.066", egm96.offset_bicubic(38.6254730, 359.9995000));
-            // println!("Geoid offset at (-0.4667440, 0.0023000) = {}. Should be 17.329", egm96.offset_bicubic(-0.4667440, 0.0023000));
+    let start = Instant::now();
+    let result = match model.as_str() {
+        "egm96" => {
+            let geoid = EGM96::new(path).expect("failed to load EGM96 dataset");
+            match interpolation {
+                "nearest" => geoid.offset(lat, lon),
+                "bilinear" => geoid.offset_bilinear(lat, lon),
+                "bicubic" => geoid.offset_bicubic(lat, lon),
+                _ => {
+                    eprintln!("unknown interpolation mode: {interpolation}");
+                    print_usage();
+                    return;
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("Failed to load EGM96 model: {}", e);
+        "egm2008" => {
+            let geoid = EGM2008::new(path).expect("failed to load EGM2008 dataset");
+            match interpolation {
+                "nearest" => geoid.offset(lat, lon),
+                "bilinear" => geoid.offset_bilinear(lat, lon),
+                "bicubic" => geoid.offset_bicubic(lat, lon),
+                _ => {
+                    eprintln!("unknown interpolation mode: {interpolation}");
+                    print_usage();
+                    return;
+                }
+            }
+        }
+        _ => {
+            eprintln!("unknown model: {model}");
+            print_usage();
+            return;
+        }
+    };
+
+    let duration = start.elapsed();
+    match result {
+        Ok(offset) => {
+            println!("Model: {}", model);
+            println!("Dataset: {}", path.display());
+            println!("Input: lat={lat:.8} lon={lon:.8}");
+            println!("Interpolation: {interpolation}");
+            println!("Geoid offset (MSL->HAE): {offset:.4} meters");
+            println!("Time: {:?}", duration);
+        }
+        Err(err) => {
+            eprintln!("Failed to query geoid offset: {err}");
         }
     }
 }

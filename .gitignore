@@ -1,1 +1,8 @@
 /target
+data/*.download
+data/EGM2008_2_5.DAC
+scripts/__pycache__/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/corpus/
+fuzz/target/

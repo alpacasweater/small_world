@@ -1,229 +1,526 @@
-use std::f32;
-use std::fs::File;
 use std::cell::RefCell;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 use std::path::Path;
-use byteorder::{BigEndian, ReadBytesExt};
-use crate::interpolate::bicubic;
 
-const EGM96_ROWS: usize = 721;  // Latitudes bins
-const EGM96_COLS: usize = 1440; // Longitude bins
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
-// TODO: Add bilinear and bicubic interpolation grids that can perist across uses
-// caching could make things fast for a lot of repeated calls in a small area.
-pub struct EGM96 {
-    data_file: RefCell<File>,
-    pub geoid: Vec<f32>,
-    lat_step_deg: f32,
-    lon_step_deg: f32,
+use crate::interpolate::bicubic_unit;
+
+const EGM96_ROWS: usize = 721;
+const EGM96_COLS: usize = 1440;
+const EGM2008_ROWS: usize = 4321;
+const EGM2008_COLS: usize = 8640;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GridFormat {
+    Egm96I16Be,
+    Egm2008F32LeFortranSequential,
 }
 
-impl EGM96 {
-    pub fn new(path: &Path) -> io::Result<Self> {
-        println!("Attempting to construct geoid model");
-        let file = File::open(&path)?;
-        
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EgmModel {
+    Egm96,
+    Egm2008,
+}
 
-        // Generate latitude and longitude arrays
-        let lat_step_deg = 180.0 / (EGM96_ROWS as f32 - 1.0);
-        let lon_step_deg = 360.0 / (EGM96_COLS as f32);
+impl EgmModel {
+    pub fn dataset_url(self) -> &'static str {
+        match self {
+            EgmModel::Egm96 => {
+                "https://earth-info.nga.mil/php/download.php?file=egm-96interpolation"
+            }
+            EgmModel::Egm2008 => {
+                "https://earth-info.nga.mil/php/download.php?file=egm-08interpolation"
+            }
+        }
+    }
 
-        Ok(EGM96 {
+    pub fn canonical_filename(self) -> &'static str {
+        match self {
+            EgmModel::Egm96 => "WW15MGH.DAC",
+            EgmModel::Egm2008 => "EGM2008_2_5.DAC",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum EgmError {
+    Io(io::Error),
+    InvalidLatitude(f64),
+    InvalidLongitude(f64),
+    InvalidIndex {
+        row: usize,
+        col: usize,
+        max_row: usize,
+        max_col: usize,
+    },
+    InvalidGridSize {
+        model: EgmModel,
+        expected_bytes: usize,
+        actual_bytes: u64,
+    },
+}
+
+impl Display for EgmError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EgmError::Io(err) => write!(f, "I/O error: {err}"),
+            EgmError::InvalidLatitude(lat) => {
+                write!(f, "latitude must be finite and within [-90, 90], got {lat}")
+            }
+            EgmError::InvalidLongitude(lon) => {
+                write!(f, "longitude must be finite, got {lon}")
+            }
+            EgmError::InvalidIndex {
+                row,
+                col,
+                max_row,
+                max_col,
+            } => {
+                write!(
+                    f,
+                    "grid index out of bounds: row={row}, col={col}, max_row={max_row}, max_col={max_col}"
+                )
+            }
+            EgmError::InvalidGridSize {
+                model,
+                expected_bytes,
+                actual_bytes,
+            } => {
+                write!(
+                    f,
+                    "unexpected {:?} grid size, expected {} bytes, got {} bytes",
+                    model, expected_bytes, actual_bytes
+                )
+            }
+        }
+    }
+}
+
+impl Error for EgmError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            EgmError::Io(err) => Some(err),
+            EgmError::InvalidLatitude(_) => None,
+            EgmError::InvalidLongitude(_) => None,
+            EgmError::InvalidIndex { .. } => None,
+            EgmError::InvalidGridSize { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for EgmError {
+    fn from(value: io::Error) -> Self {
+        EgmError::Io(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct EgmGrid {
+    data_file: RefCell<File>,
+    geoid: Vec<f64>,
+    model: EgmModel,
+    format: GridFormat,
+    rows: usize,
+    cols_storage: usize,
+    lon_bins: usize,
+    lat_step_deg: f64,
+    lon_step_deg: f64,
+}
+
+impl EgmGrid {
+    pub fn new(path: &Path, model: EgmModel) -> Result<Self, EgmError> {
+        let file = File::open(path)?;
+        let file_size = file.metadata()?.len();
+        let (rows, cols_storage, lon_bins, format) = dimensions_from_file_size(model, file_size)?;
+        let lat_step_deg = 180.0 / (rows as f64 - 1.0);
+        let lon_step_deg = 360.0 / lon_bins as f64;
+
+        Ok(Self {
             data_file: RefCell::new(file),
             geoid: Vec::new(),
+            model,
+            format,
+            rows,
+            cols_storage,
+            lon_bins,
             lat_step_deg,
-            lon_step_deg
+            lon_step_deg,
         })
     }
 
-    // This function can be used to load the entire geoid data into memory if needed.
-    // For now, we will read values on demand in `read_geoid_value`.
-    pub fn load_data(&mut self) -> io::Result<()> {
+    pub fn egm96(path: &Path) -> Result<Self, EgmError> {
+        Self::new(path, EgmModel::Egm96)
+    }
 
+    pub fn egm2008(path: &Path) -> Result<Self, EgmError> {
+        Self::new(path, EgmModel::Egm2008)
+    }
+
+    pub fn model(&self) -> EgmModel {
+        self.model
+    }
+
+    pub fn lat_step_deg(&self) -> f64 {
+        self.lat_step_deg
+    }
+
+    pub fn lon_step_deg(&self) -> f64 {
+        self.lon_step_deg
+    }
+
+    pub fn load_data(&mut self) -> Result<(), EgmError> {
         let mut file = self.data_file.borrow_mut();
+        file.seek(SeekFrom::Start(0))?;
 
-        let mut geoid =vec![0.0f32; EGM96_ROWS * EGM96_COLS];
-        for row in 0..EGM96_ROWS {
-            for col in 0..EGM96_COLS {
-                let raw = file.read_u16::<BigEndian>()?; // Read as big-endian u16
-                let signed = raw as i16;                 // Convert to i16 (two's complement)
-                let index = EGM96::index(row, col);
-                geoid[index] = signed as f32 / 100.0; // Convert to meters
+        let mut geoid = vec![0.0_f64; self.rows * self.lon_bins];
+        match self.format {
+            GridFormat::Egm96I16Be => {
+                for row in 0..self.rows {
+                    for col in 0..self.lon_bins {
+                        let raw = file.read_i16::<BigEndian>()?;
+                        geoid[self.index(row, col)] = raw as f64 / 100.0;
+                    }
+                }
+            }
+            GridFormat::Egm2008F32LeFortranSequential => {
+                let expected_record_bytes = (self.lon_bins * 4) as u32;
+                for row in 0..self.rows {
+                    let leading_record_bytes = file.read_u32::<LittleEndian>()?;
+                    if leading_record_bytes != expected_record_bytes {
+                        return Err(EgmError::InvalidGridSize {
+                            model: self.model,
+                            expected_bytes: self.rows * (self.lon_bins * 4 + 8),
+                            actual_bytes: self.rows as u64 * leading_record_bytes as u64,
+                        });
+                    }
+
+                    for col in 0..self.lon_bins {
+                        geoid[self.index(row, col)] = file.read_f32::<LittleEndian>()? as f64;
+                    }
+
+                    let trailing_record_bytes = file.read_u32::<LittleEndian>()?;
+                    if trailing_record_bytes != expected_record_bytes {
+                        return Err(EgmError::InvalidGridSize {
+                            model: self.model,
+                            expected_bytes: self.rows * (self.lon_bins * 4 + 8),
+                            actual_bytes: self.rows as u64 * trailing_record_bytes as u64,
+                        });
+                    }
+                }
             }
         }
-        self.geoid = geoid;
 
+        self.geoid = geoid;
         Ok(())
     }
 
-    // This function allows reading only the geoid data for a specific row and column without loading the entire geoid matrix into memory.
-    pub fn read_geoid_value(&self, row: usize, col: usize) -> std::io::Result<f32> {
-        let index = EGM96::index(row, col);
-        let byte_offset = index * 2; // each value is 2 bytes
+    pub fn is_loaded(&self) -> bool {
+        !self.geoid.is_empty()
+    }
+
+    pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
+        if row >= self.rows || col >= self.lon_bins {
+            return Err(EgmError::InvalidIndex {
+                row,
+                col,
+                max_row: self.rows - 1,
+                max_col: self.lon_bins - 1,
+            });
+        }
+
+        let index = self.index(row, col);
+        if !self.geoid.is_empty() {
+            return Ok(self.geoid[index]);
+        }
 
         let mut file = self.data_file.borrow_mut();
-        file.seek(SeekFrom::Start(byte_offset as u64))?;
-
-        let raw = file.read_u16::<BigEndian>()?;
-        let signed = raw as i16; // Offset in centimeters
-
-        Ok(signed as f32 / 100.0) // Return the offset in meters
-    }
-
-    // Latitudes in [-90, 90] degrees. Longitudes in [0, 360) degrees.
-    pub fn offset(&self, lat: f32, lon: f32) -> f32 {
-        // Find the cell of the matrix that corresponds to the input lat, lon
-        let eval_lon: f32 = if lon < 0.0 {lon + 360.0} else{lon};
-        let lb_row: usize = ((-lat + 90.0)/self.lat_step_deg).floor() as usize;
-        let lb_col: usize = ((eval_lon)/self.lon_step_deg).floor() as usize;
-        self.read_geoid_value(lb_row, lb_col).unwrap()
-        
-        // TODO Implement bilinear and bicubic interpolation for more accurate results
-    }
-
-    // Latitudes in [-90, 90] degrees. Longitudes in [0, 360) degrees.
-    // Supposing the input lat, lon lies within a cell of the egm96 grid
-    // returns the indices of the northmost row (latitude), and the eastmost column (longitude)
-    pub fn lower_indices(&self, lat: f32, lon: f32) -> (usize, usize) {
-        if lat < -90.0 || lat > 90.0 || lon < 0.0 || lon >= 360.0 {
-            panic!("Latitude or longitude out of bounds: ({}, {})", lat, lon);
-        }
-        // Find the cell of the matrix that corresponds to the input lat, lon
-        let eval_lon: f32 = if lon < 0.0 {lon + 360.0} else{lon};
-        let lb_row: usize = ((-lat + 90.0)/self.lat_step_deg).floor() as usize;
-        let lb_col: usize = ((eval_lon)/self.lon_step_deg).floor() as usize;
-        if lb_row >= EGM96_ROWS || lb_col >= EGM96_COLS {
-            panic!("Indices out of bounds: ({}, {})", lb_row, lb_col);
-        }
-        (lb_row, lb_col)
-    }
-
-    // Latitudes in [-90, 90] degrees. Longitudes in [0, 360) degrees.
-    pub fn upper_indices(&self, lat: f32, lon: f32) -> (usize, usize) {
-        if lat < -90.0 || lat > 90.0 || lon < 0.0 || lon >= 360.0 {
-            panic!("Latitude or longitude out of bounds: ({}, {})", lat, lon);
-        }
-        let (lb_row, lb_col) = self.lower_indices(lat, lon);
-        let ub_row = lb_row + 1;
-        let ub_col = (lb_col + 1) % EGM96_COLS; // Wrap around for longitude
-        if ub_row >= EGM96_ROWS || ub_col >= EGM96_COLS {
-            panic!("Indices out of bounds: ({}, {})", lb_row, lb_col);
-        }
-        (lb_row, lb_col)
-    }
-
-    fn index(row: usize, col: usize) -> usize {
-        if row >= EGM96_ROWS || col >= EGM96_COLS {
-            panic!("Index out of bounds: ({}, {})", row, col);
-        }
-        row * EGM96_COLS + col
-    }
-
-    // Returns an nxn grid of geoid values centered around the given lat, lon, and associated lat, lon pairs for evaluation.
-    // Note that the lat, lon pairs are relative to the input lat, lon and therefore may not adhere to the expected range
-    // Latitudes in [-90, 90] degrees. Longitudes in [0, 360) degrees.
-    fn get_grid(&self, lat: f32, lon: f32, size: usize) -> (Vec<Vec<f32>>, Vec<Vec<(f32, f32)>>) {
-        let mut offset_grid = vec![vec![0.0; size]; size];
-        let mut eval_grid = vec![vec![(0.0, 0.0); size]; size];
-        if size == 0 {
-            panic!("Grid size cannot be zero");
-        }
-
-        let half_size = size as f32 / 2.0;
-        let lat_lower = lat - half_size * self.lat_step_deg;
-        let lon_lower = lon - half_size * self.lon_step_deg;
-
-        for (r, sample_lat) in (0..size).map(|i| lat_lower + i as f32 * self.lat_step_deg).enumerate() {
-            for (c, sample_lon) in (0..size).map(|j| lon_lower + j as f32 * self.lon_step_deg).enumerate() {
-                let mut eval_lat = sample_lat;
-                let mut eval_lon = sample_lon;
-                if eval_lon < 0.0 {
-                    eval_lon = ((eval_lon % 360.0) + 360.0) % 360.0; // Normalize longitude to [0, 360)
-                }
-                if eval_lon >= 360.0 {
-                    eval_lon = eval_lon % 360.0; // Normalize longitude to [0, 360)
-                }
-                if eval_lat <= -90.0 {
-                    let diff = -90.0 - eval_lat;
-                    eval_lat = -90.0 + diff;
-                    // TODO: Wrapping around the poles is not handled here for longitude
-                }
-                if eval_lat > 90.0 {
-                    let diff = eval_lat - 90.0;
-                    eval_lat = 90.0 - diff;
-                    // TODO: Wrapping around the poles is not handled here for longitude
-                }
-                let (ub_row, ub_col) = self.upper_indices(eval_lat, eval_lon);
-                offset_grid[r][c] = self.read_geoid_value(ub_row, ub_col).expect("Failed to read geoid value");
-                eval_grid[r][c] = (sample_lat, sample_lon);
+        match self.format {
+            GridFormat::Egm96I16Be => {
+                file.seek(SeekFrom::Start((index * 2) as u64))?;
+                let raw = file.read_i16::<BigEndian>()?;
+                Ok(raw as f64 / 100.0)
+            }
+            GridFormat::Egm2008F32LeFortranSequential => {
+                let record_size = (self.lon_bins * 4 + 8) as u64;
+                let value_offset = row as u64 * record_size + 4 + col as u64 * 4;
+                file.seek(SeekFrom::Start(value_offset))?;
+                Ok(file.read_f32::<LittleEndian>()? as f64)
             }
         }
-        (offset_grid, eval_grid)
     }
 
-
-    pub fn offset_bilinear(&self, lat: f32, lon: f32) -> f32 {
-        let (offset_grid, eval_grid) = self.get_grid(lat, lon, 2);
-
-        // Get the boundaries of the evaluation cell
-        let lon_l = eval_grid[0][0].1;
-        let lon_u = eval_grid[0][1].1;
-        let lat_l = eval_grid[0][0].0;
-        let lat_u = eval_grid[1][0].0;
-
-        
-        // Interpolate along longitude first
-        let fxy1 = offset_grid[0][0]*(lon_u - lon)/self.lon_step_deg + offset_grid[0][1]*(lon - lon_l)/self.lon_step_deg;
-        let fxy2 = offset_grid[1][0]*(lon_u - lon)/self.lon_step_deg + offset_grid[1][1]*(lon - lon_l)/self.lon_step_deg;
-        
-        // Interpolate along latitude
-        let fxy = fxy1*(lat_u - lat)/self.lat_step_deg + fxy2*(lat - lat_l)/self.lat_step_deg;
-        fxy
+    pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        let lon = self.normalize_lon(lon)?;
+        self.validate_lat(lat)?;
+        let (row, col, _, _) = self.interpolation_cell(lat, lon);
+        Ok((row, col))
     }
 
-    pub fn offset_bilinear2(&self, lat: f32, lon: f32) -> f32 {
-        let (offset_grid, eval_grid) = self.get_grid(lat, lon, 2);
-
-        // Get the boundaries of the evaluation cell
-        let lat_l = eval_grid[0][0].0;
-        let lat_u = eval_grid[1][0].0;
-        let lon_l = eval_grid[0][0].1;
-        let lon_u = eval_grid[0][1].1;
-
-        // Interpolate along latitude first
-        let fxy1 = offset_grid[0][0]*(lat_u - lat)/self.lat_step_deg + offset_grid[0][1]*(lat - lat_l)/self.lat_step_deg;
-        let fxy2 = offset_grid[1][0]*(lat_u - lat)/self.lat_step_deg + offset_grid[1][1]*(lat - lat_l)/self.lat_step_deg;
-        
-        // Interpolate along longitude
-        let fxy = fxy1*(lon_u - lon)/self.lon_step_deg + fxy2*(lon - lon_l)/self.lon_step_deg;
-        fxy
+    pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        let (lower_row, lower_col) = self.lower_indices(lat, lon)?;
+        let upper_row = (lower_row + 1).min(self.rows - 1);
+        let upper_col = (lower_col + 1) % self.lon_bins;
+        Ok((upper_row, upper_col))
     }
 
-    pub fn offset_bicubic(&self, lat: f32, lon: f32) -> f32 {
-        let (offset_grid, eval_grid) = self.get_grid(lat, lon, 4);
+    pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        let lon = self.normalize_lon(lon)?;
+        self.validate_lat(lat)?;
 
-        // println!("Lat: {}, Lon: {}", lat, lon);
-        // println!("offset_grid: {:?}", offset_grid);
-        // println!("eval_grid: {:?}", eval_grid);
+        let row = ((90.0 - lat) / self.lat_step_deg)
+            .round()
+            .clamp(0.0, (self.rows - 1) as f64) as usize;
+        let col =
+            ((lon / self.lon_step_deg).round() as i64).rem_euclid(self.lon_bins as i64) as usize;
+        self.read_geoid_value(row, col)
+    }
 
-        // Convert Vec<Vec<f32>> to [[f32; 4]; 4]
-        let mut offset_arr = [[0.0f32; 4]; 4];
-        for i in 0..4 {
-            for j in 0..4 {
-                offset_arr[i][j] = offset_grid[i][j];
+    pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        let lon = self.normalize_lon(lon)?;
+        self.validate_lat(lat)?;
+
+        let (lower_row, lower_col, tx, ty) = self.interpolation_cell(lat, lon);
+        let upper_row = (lower_row + 1).min(self.rows - 1);
+        let upper_col = (lower_col + 1) % self.lon_bins;
+
+        let nw = self.read_geoid_value(lower_row, lower_col)?;
+        let ne = self.read_geoid_value(lower_row, upper_col)?;
+        let sw = self.read_geoid_value(upper_row, lower_col)?;
+        let se = self.read_geoid_value(upper_row, upper_col)?;
+
+        let north = nw * (1.0 - tx) + ne * tx;
+        let south = sw * (1.0 - tx) + se * tx;
+        Ok(north * (1.0 - ty) + south * ty)
+    }
+
+    pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        let lon = self.normalize_lon(lon)?;
+        self.validate_lat(lat)?;
+
+        let (lower_row, lower_col, tx, ty) = self.interpolation_cell(lat, lon);
+        let row_indices = [
+            lower_row.saturating_sub(1),
+            lower_row,
+            (lower_row + 1).min(self.rows - 1),
+            (lower_row + 2).min(self.rows - 1),
+        ];
+        let col_indices = [
+            (lower_col + self.lon_bins - 1) % self.lon_bins,
+            lower_col,
+            (lower_col + 1) % self.lon_bins,
+            (lower_col + 2) % self.lon_bins,
+        ];
+
+        let mut grid = [[0.0_f64; 4]; 4];
+        for (r, row_idx) in row_indices.iter().enumerate() {
+            for (c, col_idx) in col_indices.iter().enumerate() {
+                grid[r][c] = self.read_geoid_value(*row_idx, *col_idx)?;
             }
         }
 
-        // Convert Vec<Vec<(f32, f32)>> to [[(f32, f32); 4]; 4]
-        let mut eval_arr = [[(0.0f32, 0.0f32); 4]; 4];
-        for i in 0..4 {
-            for j in 0..4 {
-                eval_arr[i][j] = eval_grid[i][j];
-            }
-        }
+        Ok(bicubic_unit(tx, ty, grid))
+    }
 
-        // Interpolate using bicubic interpolation
-        let fxy = bicubic(lon, lat, offset_arr, eval_arr);
-        fxy
+    fn interpolation_cell(&self, lat: f64, lon: f64) -> (usize, usize, f64, f64) {
+        let lower_row = ((90.0 - lat) / self.lat_step_deg)
+            .floor()
+            .clamp(0.0, (self.rows - 2) as f64) as usize;
+        let lower_col =
+            ((lon / self.lon_step_deg).floor() as i64).rem_euclid(self.lon_bins as i64) as usize;
+
+        let north_lat = 90.0 - lower_row as f64 * self.lat_step_deg;
+        let west_lon = lower_col as f64 * self.lon_step_deg;
+
+        let tx = ((lon - west_lon) / self.lon_step_deg).clamp(0.0, 1.0);
+        let ty = ((north_lat - lat) / self.lat_step_deg).clamp(0.0, 1.0);
+        (lower_row, lower_col, tx, ty)
+    }
+
+    fn validate_lat(&self, lat: f64) -> Result<(), EgmError> {
+        if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+            return Err(EgmError::InvalidLatitude(lat));
+        }
+        Ok(())
+    }
+
+    fn normalize_lon(&self, lon: f64) -> Result<f64, EgmError> {
+        if !lon.is_finite() {
+            return Err(EgmError::InvalidLongitude(lon));
+        }
+        let mut normalized = lon % 360.0;
+        if normalized < 0.0 {
+            normalized += 360.0;
+        }
+        if normalized >= 360.0 {
+            normalized = 0.0;
+        }
+        Ok(normalized)
+    }
+
+    fn index(&self, row: usize, col: usize) -> usize {
+        row * self.cols_storage + col
+    }
+}
+
+fn dimensions_from_file_size(
+    model: EgmModel,
+    file_size_bytes: u64,
+) -> Result<(usize, usize, usize, GridFormat), EgmError> {
+    match model {
+        EgmModel::Egm96 => {
+            let expected = EGM96_ROWS * EGM96_COLS * 2;
+            if file_size_bytes as usize != expected {
+                return Err(EgmError::InvalidGridSize {
+                    model,
+                    expected_bytes: expected,
+                    actual_bytes: file_size_bytes,
+                });
+            }
+            Ok((EGM96_ROWS, EGM96_COLS, EGM96_COLS, GridFormat::Egm96I16Be))
+        }
+        EgmModel::Egm2008 => {
+            if file_size_bytes as usize != EGM2008_ROWS * (EGM2008_COLS * 4 + 8) {
+                return Err(EgmError::InvalidGridSize {
+                    model,
+                    expected_bytes: EGM2008_ROWS * (EGM2008_COLS * 4 + 8),
+                    actual_bytes: file_size_bytes,
+                });
+            }
+            Ok((
+                EGM2008_ROWS,
+                EGM2008_COLS,
+                EGM2008_COLS,
+                GridFormat::Egm2008F32LeFortranSequential,
+            ))
+        }
+    }
+}
+
+pub struct EGM96 {
+    inner: EgmGrid,
+}
+
+impl EGM96 {
+    pub fn new(path: &Path) -> Result<Self, EgmError> {
+        Ok(Self {
+            inner: EgmGrid::egm96(path)?,
+        })
+    }
+
+    pub fn load_data(&mut self) -> Result<(), EgmError> {
+        self.inner.load_data()
+    }
+
+    pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset(lat, lon)
+    }
+
+    pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset_bilinear(lat, lon)
+    }
+
+    pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset_bicubic(lat, lon)
+    }
+
+    pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
+        self.inner.read_geoid_value(row, col)
+    }
+
+    pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        self.inner.lower_indices(lat, lon)
+    }
+
+    pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        self.inner.upper_indices(lat, lon)
+    }
+}
+
+pub struct EGM2008 {
+    inner: EgmGrid,
+}
+
+impl EGM2008 {
+    pub fn new(path: &Path) -> Result<Self, EgmError> {
+        Ok(Self {
+            inner: EgmGrid::egm2008(path)?,
+        })
+    }
+
+    pub fn load_data(&mut self) -> Result<(), EgmError> {
+        self.inner.load_data()
+    }
+
+    pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset(lat, lon)
+    }
+
+    pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset_bilinear(lat, lon)
+    }
+
+    pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
+        self.inner.offset_bicubic(lat, lon)
+    }
+
+    pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
+        self.inner.read_geoid_value(row, col)
+    }
+
+    pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        self.inner.lower_indices(lat, lon)
+    }
+
+    pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
+        self.inner.upper_indices(lat, lon)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        dimensions_from_file_size, EgmModel, GridFormat, EGM2008_COLS, EGM2008_ROWS, EGM96_COLS,
+        EGM96_ROWS,
+    };
+
+    #[test]
+    fn egm96_dimensions_match() {
+        let size = (EGM96_ROWS * EGM96_COLS * 2) as u64;
+        let dims = dimensions_from_file_size(EgmModel::Egm96, size).unwrap();
+        assert_eq!(
+            dims,
+            (EGM96_ROWS, EGM96_COLS, EGM96_COLS, GridFormat::Egm96I16Be)
+        );
+    }
+
+    #[test]
+    fn egm96_dimensions_reject_invalid_size() {
+        let result = dimensions_from_file_size(EgmModel::Egm96, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn egm2008_dimensions_accept_8640_columns() {
+        let size = (EGM2008_ROWS * (EGM2008_COLS * 4 + 8)) as u64;
+        let dims = dimensions_from_file_size(EgmModel::Egm2008, size).unwrap();
+        assert_eq!(
+            dims,
+            (
+                EGM2008_ROWS,
+                EGM2008_COLS,
+                EGM2008_COLS,
+                GridFormat::Egm2008F32LeFortranSequential
+            )
+        );
+    }
+
+    #[test]
+    fn egm2008_dimensions_reject_invalid_size() {
+        let result = dimensions_from_file_size(EgmModel::Egm2008, 1234);
+        assert!(result.is_err());
     }
 }
