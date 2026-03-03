@@ -56,6 +56,12 @@ cargo run --example altitude_conversion -- egm96 data/WW15MGH.DAC data/srtm 39.0
 cargo run --example ground_msl_accuracy -- data/srtm data/validation/ground_msl_checkpoints.csv bilinear 15.0 40.0
 ```
 
+6. Minimal frame-to-frame conversion example (ENU/NED + AGL/MSL/HAE):
+
+```bash
+cargo run --example minimal_frame_conversion
+```
+
 ## Vertical Reference Frames
 
 Every altitude must be interpreted in one explicit frame:

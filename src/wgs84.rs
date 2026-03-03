@@ -10,6 +10,62 @@ const FIRST_ECCENTRICITY: f64 = 0.0818191908426215;
 const FIRST_ECCENTRICITY_SQ: f64 = FIRST_ECCENTRICITY * FIRST_ECCENTRICITY;
 const SECOND_ECCENTRICITY_SQ: f64 = FIRST_ECCENTRICITY_SQ / (1.0 - FIRST_ECCENTRICITY_SQ);
 
+/// WGS84 geodetic point:
+/// - latitude/longitude in decimal degrees
+/// - ellipsoidal height (`HAE`) in meters above WGS84.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LlaWgs84 {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    pub hae_m: f64,
+}
+
+impl LlaWgs84 {
+    pub const fn new(lat_deg: f64, lon_deg: f64, hae_m: f64) -> Self {
+        Self {
+            lat_deg,
+            lon_deg,
+            hae_m,
+        }
+    }
+}
+
+/// Local ENU point in meters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnuMeters {
+    pub east_m: f64,
+    pub north_m: f64,
+    pub up_m: f64,
+}
+
+impl EnuMeters {
+    pub const fn new(east_m: f64, north_m: f64, up_m: f64) -> Self {
+        Self {
+            east_m,
+            north_m,
+            up_m,
+        }
+    }
+}
+
+/// Local NED point in meters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NedMeters {
+    pub north_m: f64,
+    pub east_m: f64,
+    pub down_m: f64,
+}
+
+impl NedMeters {
+    pub const fn new(north_m: f64, east_m: f64, down_m: f64) -> Self {
+        Self {
+            north_m,
+            east_m,
+            down_m,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct GeoConversionParams {
     rot: [[f64; 3]; 3], // rotational matrix from ECEF to NED
@@ -42,6 +98,108 @@ impl GeoConversionParams {
         let y0 = (nu0 + alt0) * c_lat0 * s_lon0;
         let z0 = (nu0 * (1.0 - FIRST_ECCENTRICITY_SQ) + alt0) * s_lat0;
         GeoConversionParams { rot, x0, y0, z0 }
+    }
+}
+
+/// Converts an ENU point at one WGS84/HAE origin into an NED point at another WGS84/HAE origin.
+pub fn enu_to_ned_between_origins(
+    enu_point: EnuMeters,
+    enu_origin: LlaWgs84,
+    ned_origin: LlaWgs84,
+) -> NedMeters {
+    let enu_lat0_rad = enu_origin.lat_deg.to_radians();
+    let enu_lon0_rad = enu_origin.lon_deg.to_radians();
+    let ned_lat0_rad = ned_origin.lat_deg.to_radians();
+    let ned_lon0_rad = ned_origin.lon_deg.to_radians();
+
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut z = 0.0;
+    enu_to_ecef(
+        &enu_point.east_m,
+        &enu_point.north_m,
+        &enu_point.up_m,
+        &enu_lat0_rad,
+        &enu_lon0_rad,
+        &enu_origin.hae_m,
+        &mut x,
+        &mut y,
+        &mut z,
+    );
+
+    let mut north_m = 0.0;
+    let mut east_m = 0.0;
+    let mut down_m = 0.0;
+    ecef_to_ned(
+        &x,
+        &y,
+        &z,
+        &ned_lat0_rad,
+        &ned_lon0_rad,
+        &ned_origin.hae_m,
+        &mut north_m,
+        &mut east_m,
+        &mut down_m,
+    );
+
+    NedMeters {
+        north_m,
+        east_m,
+        down_m,
+    }
+}
+
+/// Converts an NED point at a WGS84/HAE origin into absolute LLA (WGS84 + HAE).
+pub fn ned_to_lla_wgs84(ned_point: NedMeters, ned_origin: LlaWgs84) -> LlaWgs84 {
+    let lat0_rad = ned_origin.lat_deg.to_radians();
+    let lon0_rad = ned_origin.lon_deg.to_radians();
+    let mut lat_rad = 0.0;
+    let mut lon_rad = 0.0;
+    let mut hae_m = 0.0;
+    ned_to_lla(
+        &ned_point.north_m,
+        &ned_point.east_m,
+        &ned_point.down_m,
+        &lat0_rad,
+        &lon0_rad,
+        &ned_origin.hae_m,
+        &mut lat_rad,
+        &mut lon_rad,
+        &mut hae_m,
+    );
+
+    LlaWgs84 {
+        lat_deg: lat_rad.to_degrees(),
+        lon_deg: lon_rad.to_degrees(),
+        hae_m,
+    }
+}
+
+/// Converts an absolute LLA (WGS84 + HAE) into NED meters at a WGS84/HAE origin.
+pub fn lla_to_ned_wgs84(point: LlaWgs84, ned_origin: LlaWgs84) -> NedMeters {
+    let lat_rad = point.lat_deg.to_radians();
+    let lon_rad = point.lon_deg.to_radians();
+    let lat0_rad = ned_origin.lat_deg.to_radians();
+    let lon0_rad = ned_origin.lon_deg.to_radians();
+    let mut north_m = 0.0;
+    let mut east_m = 0.0;
+    let mut down_m = 0.0;
+    lla_to_ned(
+        &lat_rad,
+        &lon_rad,
+        &point.hae_m,
+        &lat0_rad,
+        &lon0_rad,
+        &ned_origin.hae_m,
+        &mut north_m,
+        &mut east_m,
+        &mut down_m,
+    );
+
+    NedMeters {
+        north_m,
+        east_m,
+        down_m,
     }
 }
 
@@ -271,7 +429,13 @@ fn heading_enu(e0: &f64, n0: &f64, e1: &f64, n1: &f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ecef_to_lla, ecef_to_ned, euclidean_distance, lla_to_ecef, ned_to_ecef};
+    use proptest::prelude::*;
+
+    use super::{
+        ecef_to_lla, ecef_to_ned, enu_to_lla, enu_to_ned_between_origins, euclidean_distance,
+        lla_to_ecef, lla_to_ned_wgs84, ned_to_ecef, ned_to_lla_wgs84, EnuMeters, LlaWgs84,
+        NedMeters,
+    };
 
     #[test]
     fn lla_ecef_round_trip() {
@@ -325,5 +489,106 @@ mod tests {
     fn euclidean_distance_matches_expected() {
         let d = euclidean_distance(&1.0, &2.0, &3.0, &4.0, &6.0, &3.0);
         assert!((d - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn enu_to_ned_same_origin_matches_axis_convention() {
+        let origin = LlaWgs84::new(39.1612306, -76.8965265, 33.0);
+        let enu = EnuMeters::new(12.0, -4.0, 7.5);
+        let ned = enu_to_ned_between_origins(enu, origin, origin);
+
+        assert!((ned.north_m + 4.0).abs() < 1e-9);
+        assert!((ned.east_m - 12.0).abs() < 1e-9);
+        assert!((ned.down_m + 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn public_ned_lla_round_trip_is_consistent() {
+        let origin = LlaWgs84::new(39.1612306, -76.8965265, 33.0);
+        let ned = NedMeters::new(250.0, -120.0, 15.0);
+
+        let point = ned_to_lla_wgs84(ned, origin);
+        let ned_back = lla_to_ned_wgs84(point, origin);
+
+        assert!((ned_back.north_m - ned.north_m).abs() < 1e-6);
+        assert!((ned_back.east_m - ned.east_m).abs() < 1e-6);
+        assert!((ned_back.down_m - ned.down_m).abs() < 1e-6);
+    }
+
+    proptest! {
+        #[test]
+        fn public_ned_lla_round_trip_randomized(
+            lat_deg in -89.0f64..89.0,
+            lon_deg in -180.0f64..180.0,
+            hae_m in -200.0f64..12000.0,
+            north_m in -10000.0f64..10000.0,
+            east_m in -10000.0f64..10000.0,
+            down_m in -5000.0f64..5000.0,
+        ) {
+            let origin = LlaWgs84::new(lat_deg, lon_deg, hae_m);
+            let ned = NedMeters::new(north_m, east_m, down_m);
+
+            let point = ned_to_lla_wgs84(ned, origin);
+            let round_trip = lla_to_ned_wgs84(point, origin);
+
+            prop_assert!((round_trip.north_m - north_m).abs() < 1e-4);
+            prop_assert!((round_trip.east_m - east_m).abs() < 1e-4);
+            prop_assert!((round_trip.down_m - down_m).abs() < 1e-4);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn enu_to_ned_between_origins_matches_manual_chain(
+            enu_origin_lat_deg in -85.0f64..85.0,
+            enu_origin_lon_deg in -180.0f64..180.0,
+            enu_origin_hae_m in -200.0f64..12000.0,
+            ned_origin_lat_deg in -85.0f64..85.0,
+            ned_origin_lon_deg in -180.0f64..180.0,
+            ned_origin_hae_m in -200.0f64..12000.0,
+            east_m in -5000.0f64..5000.0,
+            north_m in -5000.0f64..5000.0,
+            up_m in -2000.0f64..2000.0,
+        ) {
+            let enu_origin = LlaWgs84::new(enu_origin_lat_deg, enu_origin_lon_deg, enu_origin_hae_m);
+            let ned_origin = LlaWgs84::new(ned_origin_lat_deg, ned_origin_lon_deg, ned_origin_hae_m);
+            let enu_point = EnuMeters::new(east_m, north_m, up_m);
+
+            let wrapper_output = enu_to_ned_between_origins(enu_point, enu_origin, ned_origin);
+
+            let enu_origin_lat_rad = enu_origin.lat_deg.to_radians();
+            let enu_origin_lon_rad = enu_origin.lon_deg.to_radians();
+
+            let mut point_lat_rad = 0.0;
+            let mut point_lon_rad = 0.0;
+            let mut point_hae_m = 0.0;
+            enu_to_lla(
+                &enu_point.east_m,
+                &enu_point.north_m,
+                &enu_point.up_m,
+                &enu_origin_lat_rad,
+                &enu_origin_lon_rad,
+                &enu_origin.hae_m,
+                &mut point_lat_rad,
+                &mut point_lon_rad,
+                &mut point_hae_m,
+            );
+
+            let direct_point = LlaWgs84::new(
+                point_lat_rad.to_degrees(),
+                point_lon_rad.to_degrees(),
+                point_hae_m,
+            );
+            let reconstructed_point = ned_to_lla_wgs84(wrapper_output, ned_origin);
+
+            prop_assert!((reconstructed_point.lat_deg - direct_point.lat_deg).abs() < 1e-8);
+            prop_assert!((reconstructed_point.lon_deg - direct_point.lon_deg).abs() < 1e-8);
+            prop_assert!((reconstructed_point.hae_m - direct_point.hae_m).abs() < 1e-4);
+
+            let round_trip_ned = lla_to_ned_wgs84(reconstructed_point, ned_origin);
+            prop_assert!((round_trip_ned.north_m - wrapper_output.north_m).abs() < 1e-4);
+            prop_assert!((round_trip_ned.east_m - wrapper_output.east_m).abs() < 1e-4);
+            prop_assert!((round_trip_ned.down_m - wrapper_output.down_m).abs() < 1e-4);
+        }
     }
 }
