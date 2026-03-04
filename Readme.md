@@ -190,6 +190,121 @@ cat fuzz/README.md
 - `proptest` is dev-only (`[dev-dependencies]`) and is not pulled by downstream crates using `small_world`.
 - Fuzzing dependencies are isolated in `fuzz/Cargo.toml` and are not part of normal library builds.
 
+## C/C++ Integration
+
+The crate now exports a stable C ABI for direct C++ use:
+- Header: `include/small_world.h`
+- Rust artifacts (release build):
+  - static library: `target/release/libsmall_world.a`
+  - shared library: `target/release/libsmall_world.{so|dylib|dll}` (platform dependent)
+- Modern CMake helper: `cmake/SmallWorldRust.cmake`
+
+Build the libraries:
+
+```bash
+cargo build --release
+```
+
+Minimal C++ compile/link (static, no CMake):
+
+```bash
+g++ -std=c++17 -O3 examples/cpp/minimal_conversion.cpp \
+  -Iinclude -Ltarget/release -lsmall_world -ldl -lpthread -lm \
+  -o /tmp/minimal_conversion
+```
+
+### Modern CMake: Recommended Integration
+
+The easiest integration path is the provided helper:
+- Include `cmake/SmallWorldRust.cmake`
+- Call `small_world_add_rust_library(...)`
+- Link your app against `small_world::small_world`
+
+Example (repository checked out as a subdirectory):
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(my_robot_app LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/small_world/cmake")
+include(SmallWorldRust)
+
+small_world_add_rust_library(
+  TARGET small_world_ffi
+  MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/small_world"
+  PROFILE release
+  LINKAGE STATIC
+)
+
+add_executable(my_app src/main.cpp)
+target_link_libraries(my_app PRIVATE small_world::small_world)
+```
+
+Example (`FetchContent`):
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(my_robot_app LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+include(FetchContent)
+FetchContent_Declare(
+  small_world
+  GIT_REPOSITORY https://github.com/Swarm-Command/small_world.git
+  GIT_TAG codex
+)
+FetchContent_MakeAvailable(small_world)
+
+list(APPEND CMAKE_MODULE_PATH "${small_world_SOURCE_DIR}/cmake")
+include(SmallWorldRust)
+
+small_world_add_rust_library(
+  TARGET small_world_ffi
+  MANIFEST_DIR "${small_world_SOURCE_DIR}"
+  PROFILE release
+  LINKAGE STATIC
+)
+
+add_executable(my_app src/main.cpp)
+target_link_libraries(my_app PRIVATE small_world::small_world)
+```
+
+Example project in this repo:
+
+```bash
+cmake -S examples/cpp -B /tmp/small_world_cpp_build -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/small_world_cpp_build -j
+```
+
+See [examples/cpp/README.md](examples/cpp/README.md) for the shortest setup path.
+
+Core ABI design choices:
+- Explicit frame enums for all altitude values (`SW_FRAME_AGL`, `SW_FRAME_MSL`, `SW_FRAME_HAE`).
+- Opaque converter handle (`SwConverterHandle`) to keep geoid/terrain data loaded and reused.
+- Thread-local last-error string (`sw_last_error_message`) for human-readable failure reasons.
+- Separate WGS84 local-frame bridge functions (`sw_wgs84_*`) for NED/ENU/LLA conversions.
+- Runtime cache telemetry (`sw_converter_terrain_cache_stats`) for performance monitoring.
+
+Typical C++ flow:
+1. Call `sw_converter_options_default`.
+2. Create a handle with `sw_converter_create`.
+3. Convert heights or create absolute LLA points via:
+   - `sw_converter_convert_height_m`
+   - `sw_converter_lla_wgs84_from_height_m`
+4. Perform local/global frame transforms via:
+   - `sw_wgs84_enu_to_ned_between_origins`
+   - `sw_wgs84_ned_to_lla`
+   - `sw_wgs84_lla_to_ned`
+5. Destroy handle with `sw_converter_destroy`.
+
+Frame contract for C++ callers:
+- `SwLlaWgs84.hae_m` is always WGS84 ellipsoidal height (HAE).
+- Terrain query outputs in `SwTerrainReference` are:
+  - `ground_msl_m`: terrain orthometric MSL
+  - `ground_hae_m`: terrain HAE (`ground_msl_m + geoid_offset_m`)
+- Never treat `hae_m` as MSL without explicit conversion.
+
 ## Notes
 
 - Geoid longitudes are normalized internally to `[0, 360)`.

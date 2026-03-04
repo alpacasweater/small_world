@@ -68,6 +68,17 @@ Git policy:
 - Keep large datasets out of git history.
 - `data/EGM2008_2_5.DAC` stays ignored in `.gitignore`.
 
+## C/C++ ABI Surface
+- C ABI entry points live in `src/ffi.rs`.
+- Public C header lives in `include/small_world.h`.
+- CMake helper for consumers lives in `cmake/SmallWorldRust.cmake`.
+- Build outputs include `staticlib` and `cdylib` for downstream C++ link targets.
+- C ABI keeps frame semantics explicit:
+  - `SwVerticalFrame`: `AGL`, `MSL`, `HAE`
+  - `SwLlaWgs84.hae_m`: always WGS84 ellipsoidal altitude
+- Opaque handle `SwConverterHandle` owns geoid/terrain state for efficient repeated queries.
+- Do not add implicit frame conversion APIs to C ABI without explicit design review.
+
 ## Code Map
 - `src/altitude.rs`: frame conversion logic, converter entry points, altitude sample handling
 - `src/wgs84.rs`: LLA/NED/ENU types and transforms
@@ -75,7 +86,12 @@ Git policy:
 - `src/egm96.rs`: geoid grid readers and interpolation
 - `src/height.rs`: interpolation options and height wrappers
 - `src/lib.rs`: public exports
+- `src/ffi.rs`: C ABI bridge for C/C++ consumers
+- `include/small_world.h`: C/C++ header for ABI consumption
+- `cmake/SmallWorldRust.cmake`: modern CMake integration helper
 - `examples/minimal_frame_conversion.rs`: canonical concise user example
+- `examples/cpp/minimal_conversion.cpp`: minimal C++ integration example
+- `examples/cpp/CMakeLists.txt`: working modern CMake C++ integration example
 - `Readme.md`: user docs and conversion matrices
 
 ## Canonical Example Contract
