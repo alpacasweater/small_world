@@ -92,6 +92,8 @@ Git policy:
 - `examples/minimal_frame_conversion.rs`: canonical concise user example
 - `examples/cpp/minimal_conversion.cpp`: minimal C++ integration example
 - `examples/cpp/CMakeLists.txt`: working modern CMake C++ integration example
+- `tests/oracle_proj.rs`: independent PROJ (`cct`) differential oracle tests
+- `scripts/run_oracle_validation.sh`: local/CI oracle validation entrypoint
 - `Readme.md`: user docs and conversion matrices
 
 ## Canonical Example Contract
@@ -108,6 +110,7 @@ Run in this order:
 cargo fmt --all -- --check
 ./scripts/check_runtime_dependencies.sh
 cargo test
+./scripts/run_oracle_validation.sh
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps
 ```
@@ -115,6 +118,7 @@ cargo doc --no-deps
 Notes:
 - Clippy warning policy is strict (`-D warnings`), including derivable impl linting.
 - `cargo test` includes deterministic and property-based tests.
+- `./scripts/run_oracle_validation.sh` runs differential tests against PROJ (`cct`) and is required for release confidence.
 - Keep regression tests for known conversion edge cases and frame mix-ups.
 
 ## Fuzzing and Validation Policy

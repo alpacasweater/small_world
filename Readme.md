@@ -160,8 +160,10 @@ The crate currently ships a native SRTM `.hgt` terrain reader and is designed so
 
 - Property-based tests (`proptest`) validate randomized altitude conversion invariants.
 - `cargo-fuzz` targets are provided under `fuzz/` for malformed terrain and geoid file inputs.
+- Differential oracle tests compare WGS84 local-frame transforms against PROJ (`cct`) as an independent implementation.
 - CI includes:
   - stable test/lint/doc and runtime dependency gates
+  - required oracle differential test gate (`tests/oracle_proj.rs`)
   - nightly fuzz smoke jobs
   - optional checkpoint-based terrain accuracy gate when `data/validation/ground_msl_checkpoints.csv` is provided
 
@@ -171,6 +173,21 @@ Run:
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+Run oracle differential validation locally (requires PROJ `cct` on PATH):
+
+```bash
+./scripts/run_oracle_validation.sh
+```
+
+Oracle validation details:
+- Test file: `tests/oracle_proj.rs`
+- Oracle engine: PROJ topocentric pipeline (`cct`)
+- Coverage:
+  - `LLA -> NED` differential checks
+  - `NED -> LLA` differential checks
+  - pole and anti-meridian edge-case checks
+- Fails when max component/horizontal/vertical error exceeds strict meter-level tolerances.
 
 Fuzz setup and commands:
 

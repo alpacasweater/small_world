@@ -21,8 +21,16 @@ jobs:
       - name: Runtime Dependency Gate
         run: ./scripts/check_runtime_dependencies.sh
 
+      - name: Install PROJ Oracle Tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y proj-bin
+
       - name: Unit And Property Tests
         run: cargo test
+
+      - name: Oracle Differential Tests (PROJ)
+        run: SMALL_WORLD_REQUIRE_PROJ=1 cargo test --test oracle_proj -- --nocapture
 
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
