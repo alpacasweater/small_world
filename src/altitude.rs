@@ -255,6 +255,10 @@ where
         sample: AltitudeSample,
         target_frame: VerticalFrame,
     ) -> Result<AltitudeSample, AltitudeError> {
+        if sample.frame == target_frame {
+            return AltitudeSample::new(sample.meters, sample.frame);
+        }
+
         let msl_m = match sample.frame {
             VerticalFrame::Agl => self.msl_from_agl(point.lat_deg, point.lon_deg, sample.meters)?,
             VerticalFrame::Msl => sample.meters,
@@ -424,6 +428,7 @@ mod tests {
     struct MockGeoid {
         value_m: f64,
         interpolation_seen: Cell<Option<Interpolation>>,
+        query_count: Cell<usize>,
     }
 
     impl MockGeoid {
@@ -431,7 +436,12 @@ mod tests {
             Self {
                 value_m,
                 interpolation_seen: Cell::new(None),
+                query_count: Cell::new(0),
             }
+        }
+
+        fn query_count(&self) -> usize {
+            self.query_count.get()
         }
     }
 
@@ -443,6 +453,7 @@ mod tests {
             interpolation: Interpolation,
         ) -> Result<f64, AltitudeError> {
             self.interpolation_seen.set(Some(interpolation));
+            self.query_count.set(self.query_count.get() + 1);
             Ok(self.value_m)
         }
     }
@@ -450,6 +461,7 @@ mod tests {
     struct MockTerrain {
         value_m: f64,
         interpolation_seen: Cell<Option<Interpolation>>,
+        query_count: Cell<usize>,
     }
 
     impl MockTerrain {
@@ -457,7 +469,12 @@ mod tests {
             Self {
                 value_m,
                 interpolation_seen: Cell::new(None),
+                query_count: Cell::new(0),
             }
+        }
+
+        fn query_count(&self) -> usize {
+            self.query_count.get()
         }
     }
 
@@ -469,6 +486,7 @@ mod tests {
             interpolation: Interpolation,
         ) -> Result<f64, AltitudeError> {
             self.interpolation_seen.set(Some(interpolation));
+            self.query_count.set(self.query_count.get() + 1);
             Ok(self.value_m)
         }
     }
@@ -637,6 +655,143 @@ mod tests {
         assert_eq!(from_scalar.alt_type(), from_sample.alt_type());
     }
 
+    #[test]
+    fn same_frame_conversion_is_strict_identity_and_query_free() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        for frame in frames {
+            let via_sample = converter
+                .convert_sample(point, AltitudeSample::new(123.45, frame).unwrap(), frame)
+                .unwrap();
+            assert_eq!(via_sample.frame, frame);
+            assert!((via_sample.meters - 123.45).abs() < 1e-12);
+
+            let via_scalar = converter
+                .convert_height_m(point, 123.45, frame, frame)
+                .unwrap();
+            assert!((via_scalar - 123.45).abs() < 1e-12);
+        }
+
+        assert_eq!(geoid.query_count(), 0);
+        assert_eq!(terrain.query_count(), 0);
+    }
+
+    #[test]
+    fn lla_from_hae_is_query_free_and_preserves_altitude() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let lla = converter
+            .lla_wgs84_from_height_m(point, 200.0, VerticalFrame::Hae)
+            .unwrap();
+        assert!((lla.lat_deg() - 10.0).abs() < 1e-12);
+        assert!((lla.lon_deg() - 20.0).abs() < 1e-12);
+        assert!((lla.alt_m() - 200.0).abs() < 1e-12);
+        assert_eq!(lla.alt_type(), AltType::Wgs84);
+        assert_eq!(geoid.query_count(), 0);
+        assert_eq!(terrain.query_count(), 0);
+    }
+
+    #[test]
+    fn conversion_matrix_matches_closed_form_relationships() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        for source in frames {
+            for target in frames {
+                let input = 250.0;
+                let expected_msl = match source {
+                    VerticalFrame::Agl => input + 120.0,
+                    VerticalFrame::Msl => input,
+                    VerticalFrame::Hae => input - 30.0,
+                };
+                let expected = match target {
+                    VerticalFrame::Agl => expected_msl - 120.0,
+                    VerticalFrame::Msl => expected_msl,
+                    VerticalFrame::Hae => expected_msl + 30.0,
+                };
+
+                let actual = converter
+                    .convert_height_m(point, input, source, target)
+                    .unwrap();
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "source={source:?} target={target:?} expected={expected} actual={actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_pair_queries_use_only_required_references() {
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+        let cases = [
+            (VerticalFrame::Agl, VerticalFrame::Agl, 0, 0),
+            (VerticalFrame::Agl, VerticalFrame::Msl, 0, 1),
+            (VerticalFrame::Agl, VerticalFrame::Hae, 1, 1),
+            (VerticalFrame::Msl, VerticalFrame::Agl, 0, 1),
+            (VerticalFrame::Msl, VerticalFrame::Msl, 0, 0),
+            (VerticalFrame::Msl, VerticalFrame::Hae, 1, 0),
+            (VerticalFrame::Hae, VerticalFrame::Agl, 1, 1),
+            (VerticalFrame::Hae, VerticalFrame::Msl, 1, 0),
+            (VerticalFrame::Hae, VerticalFrame::Hae, 0, 0),
+        ];
+
+        for (source, target, expected_geoid_queries, expected_terrain_queries) in cases {
+            let geoid = MockGeoid::new(30.0);
+            let terrain = MockTerrain::new(120.0);
+            let converter = AltitudeConverter::new(&geoid, &terrain);
+            let _ = converter
+                .convert_height_m(point, 250.0, source, target)
+                .unwrap();
+
+            assert_eq!(
+                geoid.query_count(),
+                expected_geoid_queries,
+                "source={source:?} target={target:?}"
+            );
+            assert_eq!(
+                terrain.query_count(),
+                expected_terrain_queries,
+                "source={source:?} target={target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn same_frame_fast_path_still_validates_finite_height() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        // Simulate external caller bypassing constructors via public fields.
+        let invalid_sample = AltitudeSample {
+            meters: f64::NAN,
+            frame: VerticalFrame::Msl,
+        };
+        let err = converter
+            .convert_sample(point, invalid_sample, VerticalFrame::Msl)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AltitudeError::InvalidHeight { name: "meters", .. }
+        ));
+
+        // Same-frame failure should not have queried reference datasets.
+        assert_eq!(geoid.query_count(), 0);
+        assert_eq!(terrain.query_count(), 0);
+    }
+
     proptest! {
         #[test]
         fn randomized_round_trip_invariants_hold(
@@ -708,6 +863,49 @@ mod tests {
 
             prop_assert_eq!(typed.frame, target_frame);
             prop_assert!((typed.meters - scalar).abs() < 1e-9);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn all_frame_pair_round_trips_hold(
+            lat in -90.0f64..90.0,
+            lon in -720.0f64..720.0,
+            geoid_offset_m in -120.0f64..120.0,
+            ground_msl_m in -500.0f64..9000.0,
+            value_m in -2000.0f64..50000.0,
+            source in 0u8..3,
+            mid in 0u8..3,
+        ) {
+            let geoid = MockGeoid::new(geoid_offset_m);
+            let terrain = MockTerrain::new(ground_msl_m);
+            let converter = AltitudeConverter::new(&geoid, &terrain);
+            let point = GeoPoint::new(lat, lon).unwrap();
+
+            let source_frame = match source {
+                0 => VerticalFrame::Agl,
+                1 => VerticalFrame::Msl,
+                _ => VerticalFrame::Hae,
+            };
+            let mid_frame = match mid {
+                0 => VerticalFrame::Agl,
+                1 => VerticalFrame::Msl,
+                _ => VerticalFrame::Hae,
+            };
+
+            let mid_sample = converter
+                .convert_sample(
+                    point,
+                    AltitudeSample::new(value_m, source_frame).unwrap(),
+                    mid_frame,
+                )
+                .unwrap();
+            let back = converter
+                .convert_sample(point, mid_sample, source_frame)
+                .unwrap();
+
+            prop_assert_eq!(back.frame, source_frame);
+            prop_assert!((back.meters - value_m).abs() < 1e-9);
         }
     }
 }
