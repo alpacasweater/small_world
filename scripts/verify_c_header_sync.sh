@@ -9,11 +9,21 @@ rust_exports_file="$(mktemp)"
 header_exports_file="$(mktemp)"
 trap 'rm -f "${rust_exports_file}" "${header_exports_file}"' EXIT
 
-rg 'pub unsafe extern "C" fn sw_[a-z0-9_]+' -o "${RUST_FFI}" \
+extract_matches() {
+  local pattern="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg "${pattern}" -o "${file}"
+  else
+    grep -Eo "${pattern}" "${file}"
+  fi
+}
+
+extract_matches 'pub unsafe extern "C" fn sw_[a-z0-9_]+' "${RUST_FFI}" \
   | awk '{print $NF}' \
   | sort -u >"${rust_exports_file}"
 
-rg 'sw_[a-z0-9_]+\(' -o "${HEADER}" \
+extract_matches 'sw_[a-z0-9_]+\(' "${HEADER}" \
   | sed 's/(//' \
   | sort -u >"${header_exports_file}"
 

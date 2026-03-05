@@ -115,6 +115,16 @@ function(small_world_add_rust_library)
   if(UNIX AND NOT APPLE)
     target_link_libraries("${SW_TARGET}" INTERFACE m)
   endif()
+  if(WIN32)
+    # rustc staticlib for MSVC requires these native system libraries.
+    target_link_libraries("${SW_TARGET}" INTERFACE
+      kernel32
+      ntdll
+      userenv
+      ws2_32
+      dbghelp
+    )
+  endif()
 
   if(NOT TARGET small_world::small_world)
     add_library(small_world::small_world ALIAS "${SW_TARGET}")
