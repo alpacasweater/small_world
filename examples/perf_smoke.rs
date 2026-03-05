@@ -27,6 +27,17 @@ struct Metric {
     p99_ns_per_op: f64,
 }
 
+struct PerfSummary {
+    altitude_dataset: Metric,
+    terrain_bilinear: Metric,
+    wgs84_round_trip: Metric,
+    ffi_single_thread: Metric,
+    ffi_shared_handle_8t: Metric,
+    ffi_per_thread_handles_8t: Metric,
+    ffi_threads: usize,
+    max_rss_kb: Option<u64>,
+}
+
 fn percentile(values: &[f64], percentile: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -99,6 +110,17 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ));
     fs::create_dir_all(&dir).expect("failed to create temporary benchmark directory");
     dir
+}
+
+fn perf_thread_count() -> usize {
+    if let Ok(raw) = env::var("SMALL_WORLD_PERF_THREADS") {
+        if let Ok(parsed) = raw.parse::<usize>() {
+            return parsed.clamp(1, 8);
+        }
+    }
+    thread::available_parallelism()
+        .map(|n| n.get().clamp(1, 8))
+        .unwrap_or(4)
 }
 
 fn write_linear_hgt_tile(root: &Path, side: usize) {
@@ -257,8 +279,11 @@ fn parallel_metric(iterations_total: u64, elapsed_s: f64, thread_ns_per_op: &[f6
     metric_from_samples(iterations_total, elapsed_s, thread_ns_per_op)
 }
 
-fn bench_ffi_shared_handle_8t(geoid_path: &Path, terrain_root: &Path) -> Result<Metric, String> {
-    let threads = 8_usize;
+fn bench_ffi_shared_handle_8t(
+    geoid_path: &Path,
+    terrain_root: &Path,
+    threads: usize,
+) -> Result<Metric, String> {
     let iterations_per_thread = 80_000_u64;
     // SAFETY: path inputs are valid and converted to C strings.
     let handle = unsafe { ffi_create_converter(geoid_path, terrain_root)? };
@@ -305,8 +330,8 @@ fn bench_ffi_shared_handle_8t(geoid_path: &Path, terrain_root: &Path) -> Result<
 fn bench_ffi_per_thread_handles_8t(
     geoid_path: &Path,
     terrain_root: &Path,
+    threads: usize,
 ) -> Result<Metric, String> {
-    let threads = 8_usize;
     let iterations_per_thread = 80_000_u64;
     let mut handles = Vec::with_capacity(threads);
     for _ in 0..threads {
@@ -432,20 +457,13 @@ fn peak_rss_kb() -> Option<u64> {
     Some((counters.peak_working_set_size as u64) / 1024)
 }
 
-fn json_string(
-    altitude_dataset: Metric,
-    terrain_bilinear: Metric,
-    wgs84_round_trip: Metric,
-    ffi_single_thread: Metric,
-    ffi_shared_handle_8t: Metric,
-    ffi_per_thread_handles_8t: Metric,
-    max_rss_kb: Option<u64>,
-) -> String {
-    let shared_scale_vs_ideal =
-        ffi_shared_handle_8t.ops_per_sec / (ffi_single_thread.ops_per_sec * 8.0).max(1e-12);
-    let per_thread_scale_vs_ideal =
-        ffi_per_thread_handles_8t.ops_per_sec / (ffi_single_thread.ops_per_sec * 8.0).max(1e-12);
-    let max_rss_json = max_rss_kb
+fn json_string(summary: &PerfSummary) -> String {
+    let shared_scale_vs_ideal = summary.ffi_shared_handle_8t.ops_per_sec
+        / (summary.ffi_single_thread.ops_per_sec * summary.ffi_threads as f64).max(1e-12);
+    let per_thread_scale_vs_ideal = summary.ffi_per_thread_handles_8t.ops_per_sec
+        / (summary.ffi_single_thread.ops_per_sec * summary.ffi_threads as f64).max(1e-12);
+    let max_rss_json = summary
+        .max_rss_kb
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_string());
 
@@ -461,16 +479,21 @@ fn json_string(
 {}\n\
   }},\n\
   \"derived\": {{\n\
+    \"ffi_thread_count\": {},\n\
     \"ffi_shared_scale_vs_ideal\": {:.6},\n\
     \"ffi_per_thread_scale_vs_ideal\": {:.6}\n\
   }}\n\
 }}\n",
-        metric_json("altitude_dataset", altitude_dataset),
-        metric_json("terrain_bilinear", terrain_bilinear),
-        metric_json("wgs84_round_trip", wgs84_round_trip),
-        metric_json("ffi_single_thread", ffi_single_thread),
-        metric_json("ffi_shared_handle_8t", ffi_shared_handle_8t),
-        metric_json("ffi_per_thread_handles_8t", ffi_per_thread_handles_8t),
+        metric_json("altitude_dataset", summary.altitude_dataset),
+        metric_json("terrain_bilinear", summary.terrain_bilinear),
+        metric_json("wgs84_round_trip", summary.wgs84_round_trip),
+        metric_json("ffi_single_thread", summary.ffi_single_thread),
+        metric_json("ffi_shared_handle_8t", summary.ffi_shared_handle_8t),
+        metric_json(
+            "ffi_per_thread_handles_8t",
+            summary.ffi_per_thread_handles_8t
+        ),
+        summary.ffi_threads,
         shared_scale_vs_ideal,
         per_thread_scale_vs_ideal,
     )
@@ -506,46 +529,54 @@ fn main() -> Result<(), String> {
 
     let terrain_root = unique_temp_dir("terrain");
     write_linear_hgt_tile(&terrain_root, 1201);
+    let ffi_threads = perf_thread_count();
 
     let altitude_dataset = bench_altitude_conversion_dataset(&geoid_path, &terrain_root)?;
     let terrain_bilinear = bench_terrain_bilinear(&terrain_root);
     let wgs84_round_trip = bench_wgs84_round_trip();
     let ffi_single_thread = bench_ffi_single_thread(&geoid_path, &terrain_root)?;
-    let ffi_shared_handle_8t = bench_ffi_shared_handle_8t(&geoid_path, &terrain_root)?;
-    let ffi_per_thread_handles_8t = bench_ffi_per_thread_handles_8t(&geoid_path, &terrain_root)?;
+    let ffi_shared_handle_8t = bench_ffi_shared_handle_8t(&geoid_path, &terrain_root, ffi_threads)?;
+    let ffi_per_thread_handles_8t =
+        bench_ffi_per_thread_handles_8t(&geoid_path, &terrain_root, ffi_threads)?;
     let max_rss_kb = peak_rss_kb();
-
-    println!("small_world perf smoke metrics (dataset-backed):");
-    print_metric("altitude_dataset", altitude_dataset);
-    print_metric("terrain_bilinear", terrain_bilinear);
-    print_metric("wgs84_round_trip", wgs84_round_trip);
-    print_metric("ffi_single_thread", ffi_single_thread);
-    print_metric("ffi_shared_handle_8t", ffi_shared_handle_8t);
-    print_metric("ffi_per_thread_handles_8t", ffi_per_thread_handles_8t);
-
-    let shared_scale_vs_ideal =
-        ffi_shared_handle_8t.ops_per_sec / (ffi_single_thread.ops_per_sec * 8.0).max(1e-12);
-    let per_thread_scale_vs_ideal =
-        ffi_per_thread_handles_8t.ops_per_sec / (ffi_single_thread.ops_per_sec * 8.0).max(1e-12);
-    println!("  ffi_shared_scale_vs_ideal: {:.4}", shared_scale_vs_ideal);
-    println!(
-        "  ffi_per_thread_scale_vs_ideal: {:.4}",
-        per_thread_scale_vs_ideal
-    );
-    match max_rss_kb {
-        Some(value) => println!("  max_rss_kb: {value}"),
-        None => println!("  max_rss_kb: unavailable"),
-    }
-
-    let json = json_string(
+    let summary = PerfSummary {
         altitude_dataset,
         terrain_bilinear,
         wgs84_round_trip,
         ffi_single_thread,
         ffi_shared_handle_8t,
         ffi_per_thread_handles_8t,
+        ffi_threads,
         max_rss_kb,
+    };
+
+    println!("small_world perf smoke metrics (dataset-backed):");
+    print_metric("altitude_dataset", summary.altitude_dataset);
+    print_metric("terrain_bilinear", summary.terrain_bilinear);
+    print_metric("wgs84_round_trip", summary.wgs84_round_trip);
+    print_metric("ffi_single_thread", summary.ffi_single_thread);
+    print_metric("ffi_shared_handle_8t", summary.ffi_shared_handle_8t);
+    print_metric(
+        "ffi_per_thread_handles_8t",
+        summary.ffi_per_thread_handles_8t,
     );
+
+    let shared_scale_vs_ideal = summary.ffi_shared_handle_8t.ops_per_sec
+        / (summary.ffi_single_thread.ops_per_sec * summary.ffi_threads as f64).max(1e-12);
+    let per_thread_scale_vs_ideal = summary.ffi_per_thread_handles_8t.ops_per_sec
+        / (summary.ffi_single_thread.ops_per_sec * summary.ffi_threads as f64).max(1e-12);
+    println!("  ffi_thread_count: {}", summary.ffi_threads);
+    println!("  ffi_shared_scale_vs_ideal: {:.4}", shared_scale_vs_ideal);
+    println!(
+        "  ffi_per_thread_scale_vs_ideal: {:.4}",
+        per_thread_scale_vs_ideal
+    );
+    match summary.max_rss_kb {
+        Some(value) => println!("  max_rss_kb: {value}"),
+        None => println!("  max_rss_kb: unavailable"),
+    }
+
+    let json = json_string(&summary);
     if let Some(path) = parse_json_out_arg() {
         fs::write(&path, json)
             .map_err(|err| format!("failed to write perf JSON {}: {err}", path.display()))?;
