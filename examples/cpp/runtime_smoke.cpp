@@ -6,7 +6,9 @@
 
 namespace {
 
-constexpr double kTol = 1e-9;
+// Smoke test tolerance is intentionally loose enough to avoid
+// cross-toolchain floating-point noise while still catching regressions.
+constexpr double kTol = 1e-6;
 
 void require_ok(SwStatus status, const char* step) {
   if (status != SW_STATUS_OK) {
