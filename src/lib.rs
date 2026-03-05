@@ -48,7 +48,7 @@
 //! assert!((ned_at_same_origin.d() + 2.0).abs() < 1e-6);
 //! ```
 //!
-//! See repository `Readme.md` for datasets, C++/CMake integration, and oracle-validation setup.
+//! See `Readme.md` for quick-start usage and `docs/PRODUCTION.md` for validation/deployment details.
 
 /// Frame-explicit altitude conversion API (`AGL`/`MSL`/`HAE`).
 pub mod altitude;

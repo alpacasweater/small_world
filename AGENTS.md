@@ -11,7 +11,7 @@ Use this file to restore context quickly, preserve API decisions, and keep frame
 
 ## What Was Decided
 
-### 1) Altitude API choice is locked to Candidate A
+### 1) Altitude API choice is locked to converter-first API
 Primary API surface:
 - `AltitudeConverter::convert_height_m(point, height_m, from, to)`
 - `AltitudeConverter::convert_sample(sample, to)`
@@ -23,7 +23,7 @@ Rationale:
 - Low ambiguity around source and destination vertical frame
 - Least likely to hide bugs in implicit conversions
 
-### 2) Candidate B/C APIs are intentionally removed
+### 2) Older implicit/construction-style APIs are intentionally removed
 Do not reintroduce without explicit design review:
 - `Lla::from_agl/from_msl/from_hae`
 - fluent height helpers like `point.agl_m(...).convert_to(...)`
@@ -146,7 +146,7 @@ Before declaring production-ready:
 2. CI passes on PR branch (including clippy strict mode).
 3. README and example code reflect current public API exactly.
 4. Public API docs and method names are frame-explicit.
-5. No stale references to removed Candidate B/C ergonomics.
+5. No stale references to removed implicit ergonomics.
 
 ## Common Failure Modes
 - Ambiguous variable names like `alt` without frame suffix.
@@ -164,7 +164,7 @@ Before declaring production-ready:
 
 ## Resume Steps for the Next Agent
 1. Check repo state: `git status -sb`.
-2. Confirm docs and examples are Candidate A-only.
+2. Confirm docs and examples are converter-first only.
 3. Run full quality gate commands.
 4. Read `src/altitude.rs` and `src/wgs84.rs` before touching conversions.
 5. If API changes are required, update:
