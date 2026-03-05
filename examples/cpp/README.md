@@ -19,6 +19,12 @@ Binary:
 /tmp/small_world_cpp_build/minimal_conversion
 ```
 
+Runtime smoke test (dataset-free, recommended for CI):
+
+```bash
+ctest --test-dir /tmp/small_world_cpp_build -C Release --output-on-failure
+```
+
 ## How It Works
 
 `small_world_add_rust_library(...)`:
@@ -27,3 +33,9 @@ Binary:
 3. Exposes `include/small_world.h` automatically as an interface include path.
 
 You can link any of your own C++ targets directly against `small_world::small_world`.
+
+## Concurrency guidance
+
+- `sw_converter_*` calls are thread-safe.
+- A single shared `SwConverterHandle*` is safe but serialized internally.
+- For high-throughput workloads, create one converter handle per worker thread.

@@ -4,6 +4,10 @@ set -euo pipefail
 MODEL="all"
 OUT_DIR="data"
 KEEP_ARCHIVE="false"
+STRICT_CHECKSUM="false"
+SHA256_EGM96=""
+SHA256_EGM2008=""
+HASH_LOG=""
 DOWNLOADED_EGM96="false"
 DOWNLOADED_EGM2008="false"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,11 +18,14 @@ Download and stage EGM geoid datasets from NGA.
 
 Usage:
   ./scripts/download_geoid_data.sh [--model egm96|egm2008|all] [--out-dir data] [--keep-archive]
+                                 [--sha256-egm96 <hex>] [--sha256-egm2008 <hex>]
+                                 [--strict-checksum] [--sha256-log <path>]
 
 Examples:
   ./scripts/download_geoid_data.sh --model egm96
   ./scripts/download_geoid_data.sh --model egm2008 --out-dir data
   ./scripts/download_geoid_data.sh --model all
+  ./scripts/download_geoid_data.sh --model egm96 --sha256-egm96 <expected_hash>
 EOF
 }
 
@@ -35,6 +42,22 @@ while [[ $# -gt 0 ]]; do
     --keep-archive)
       KEEP_ARCHIVE="true"
       shift
+      ;;
+    --sha256-egm96)
+      SHA256_EGM96="$2"
+      shift 2
+      ;;
+    --sha256-egm2008)
+      SHA256_EGM2008="$2"
+      shift 2
+      ;;
+    --strict-checksum)
+      STRICT_CHECKSUM="true"
+      shift
+      ;;
+    --sha256-log)
+      HASH_LOG="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -55,6 +78,11 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+if [[ -n "$HASH_LOG" ]]; then
+  mkdir -p "$(dirname "$HASH_LOG")"
+  : >"$HASH_LOG"
+fi
+
 get_file_size() {
   local path="$1"
   if stat -f "%z" "$path" >/dev/null 2>&1; then
@@ -62,6 +90,22 @@ get_file_size() {
   else
     stat -c "%s" "$path"
   fi
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    echo "sha256sum/shasum is required for checksum verification" >&2
+    exit 1
+  fi
+}
+
+to_lower() {
+  echo "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 find_largest_file() {
@@ -143,6 +187,7 @@ download_one() {
   local model="$1"
   local url="$2"
   local canonical_name="$3"
+  local expected_sha256="$4"
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
@@ -176,6 +221,26 @@ download_one() {
   size="$(get_file_size "${OUT_DIR}/${canonical_name}")"
   echo "Staged ${model} grid at ${OUT_DIR}/${canonical_name} (${size} bytes)"
 
+  local actual_sha256
+  actual_sha256="$(sha256_file "${OUT_DIR}/${canonical_name}")"
+  echo "SHA256 ${canonical_name}: ${actual_sha256}"
+
+  if [[ "$STRICT_CHECKSUM" == "true" && -z "$expected_sha256" ]]; then
+    echo "strict checksum mode enabled but no expected checksum was provided for ${model}" >&2
+    exit 1
+  fi
+  if [[ -n "$expected_sha256" ]]; then
+    if [[ "$(to_lower "$actual_sha256")" != "$(to_lower "$expected_sha256")" ]]; then
+      echo "checksum mismatch for ${canonical_name}" >&2
+      echo "  expected: ${expected_sha256}" >&2
+      echo "  actual:   ${actual_sha256}" >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "$HASH_LOG" ]]; then
+    echo "${actual_sha256}  ${canonical_name}" >>"$HASH_LOG"
+  fi
+
   if [[ "$KEEP_ARCHIVE" == "true" ]]; then
     cp "$archive" "${OUT_DIR}/${model}.download"
     echo "Saved archive as ${OUT_DIR}/${model}.download"
@@ -188,7 +253,8 @@ download_egm96() {
   download_one \
     "egm96" \
     "https://earth-info.nga.mil/php/download.php?file=egm-96interpolation" \
-    "WW15MGH.DAC"
+    "WW15MGH.DAC" \
+    "$SHA256_EGM96"
   DOWNLOADED_EGM96="true"
 }
 
@@ -196,7 +262,8 @@ download_egm2008() {
   download_one \
     "egm2008" \
     "https://earth-info.nga.mil/php/download.php?file=egm-08interpolation" \
-    "EGM2008_2_5.DAC"
+    "EGM2008_2_5.DAC" \
+    "$SHA256_EGM2008"
   DOWNLOADED_EGM2008="true"
 }
 

@@ -112,7 +112,10 @@ Run in this order:
 ```bash
 cargo fmt --all -- --check
 ./scripts/check_runtime_dependencies.sh
+./scripts/verify_c_header_sync.sh
 cargo test
+./scripts/verify_cmake_rust_rebuild.sh
+./scripts/run_perf_smoke.sh
 ./scripts/run_oracle_validation.sh
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps

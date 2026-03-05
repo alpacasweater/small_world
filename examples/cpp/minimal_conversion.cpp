@@ -23,7 +23,7 @@ int main() {
   require_ok(sw_converter_create("data/WW15MGH.DAC", "data/srtm", &opts, &converter),
              "sw_converter_create");
 
-  // 1) Convert a local AGL height to absolute HAE at this geodetic point.
+  // 1) Convert an MSL altitude to absolute HAE at this geodetic point.
   SwLlaWgs84 enu_origin{};
   require_ok(sw_converter_lla_wgs84_from_height_m(converter, 39.0000, -77.0000, 110.0,
                                                   SW_FRAME_MSL, &enu_origin),

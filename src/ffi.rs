@@ -793,6 +793,7 @@ mod tests {
     use std::ffi::{CStr, CString};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -1002,6 +1003,57 @@ mod tests {
                 assert_eq!(status, SwStatus::Ok);
                 assert!((out - 225.0).abs() < 1e-9);
             }
+
+            let mut cached_tiles = 0_u64;
+            let mut loaded_tiles = 0_u64;
+            let status =
+                sw_converter_terrain_cache_stats(handle, &mut cached_tiles, &mut loaded_tiles);
+            assert_eq!(status, SwStatus::Ok);
+            assert_eq!(cached_tiles, 1);
+            assert_eq!(loaded_tiles, 1);
+
+            sw_converter_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn ffi_shared_handle_is_safe_under_concurrent_queries() {
+        let dir = unique_temp_dir("concurrent");
+        // SAFETY: test inputs satisfy all API contracts.
+        unsafe {
+            let handle = make_converter(&dir);
+            let shared = handle as usize;
+
+            let mut workers = Vec::new();
+            for thread_id in 0..8 {
+                workers.push(thread::spawn(move || {
+                    let handle = shared as *mut SwConverterHandle;
+                    let mut checksum = 0.0_f64;
+                    for i in 0..5_000 {
+                        let mut out = 0.0_f64;
+                        let lat = 0.01 + ((i + thread_id * 131) % 900) as f64 / 1000.0;
+                        let lon = 0.01 + ((i + thread_id * 197) % 900) as f64 / 1000.0;
+                        let status = sw_converter_convert_height_m(
+                            handle,
+                            lat,
+                            lon,
+                            75.0,
+                            SwVerticalFrame::Agl,
+                            SwVerticalFrame::Hae,
+                            &mut out,
+                        );
+                        assert_eq!(status, SwStatus::Ok);
+                        checksum += out;
+                    }
+                    checksum
+                }));
+            }
+
+            let total: f64 = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .sum();
+            assert!(total.is_finite());
 
             let mut cached_tiles = 0_u64;
             let mut loaded_tiles = 0_u64;

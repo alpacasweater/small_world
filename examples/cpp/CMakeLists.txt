@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(small_world_cpp_example LANGUAGES CXX)
+enable_testing()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,3 +18,7 @@ small_world_add_rust_library(
 
 add_executable(minimal_conversion minimal_conversion.cpp)
 target_link_libraries(minimal_conversion PRIVATE small_world::small_world)
+
+add_executable(runtime_smoke runtime_smoke.cpp)
+target_link_libraries(runtime_smoke PRIVATE small_world::small_world)
+add_test(NAME runtime_smoke COMMAND runtime_smoke)

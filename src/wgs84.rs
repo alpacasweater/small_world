@@ -8,7 +8,9 @@
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
+use std::error::Error;
 use std::f64::consts::PI;
+use std::fmt::{Display, Formatter};
 
 // WGS84 ellipsoid defined in meters
 const SEMIMAJOR_AXIS: f64 = 6378137.0;
@@ -24,6 +26,39 @@ pub enum AltType {
     Wgs84,
 }
 
+/// Errors returned by checked WGS84 type constructors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wgs84Error {
+    InvalidLatitude(f64),
+    InvalidLongitude(f64),
+    InvalidAltitude(f64),
+    InvalidComponent { name: &'static str, value: f64 },
+}
+
+impl Display for Wgs84Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Wgs84Error::InvalidLatitude(value) => {
+                write!(
+                    f,
+                    "lat_deg must be finite and within [-90, 90], got {value}"
+                )
+            }
+            Wgs84Error::InvalidLongitude(value) => {
+                write!(f, "lon_deg must be finite, got {value}")
+            }
+            Wgs84Error::InvalidAltitude(value) => {
+                write!(f, "alt_m must be finite, got {value}")
+            }
+            Wgs84Error::InvalidComponent { name, value } => {
+                write!(f, "{name} must be finite, got {value}")
+            }
+        }
+    }
+}
+
+impl Error for Wgs84Error {}
+
 /// Geodetic LLA point with explicit altitude datum.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lla {
@@ -34,7 +69,10 @@ pub struct Lla {
 }
 
 impl Lla {
-    /// Creates a geodetic coordinate (`lat_deg`, `lon_deg`, `alt_m`) with explicit altitude type.
+    /// Creates an unchecked geodetic coordinate (`lat_deg`, `lon_deg`, `alt_m`) with explicit
+    /// altitude type.
+    ///
+    /// Prefer [`Self::try_new`] for input validation.
     pub const fn new(lat_deg: f64, lon_deg: f64, alt_m: f64, alt_type: AltType) -> Self {
         Self {
             lat_deg,
@@ -42,6 +80,19 @@ impl Lla {
             alt_m,
             alt_type,
         }
+    }
+
+    /// Creates a checked geodetic coordinate with explicit altitude type.
+    pub fn try_new(
+        lat_deg: f64,
+        lon_deg: f64,
+        alt_m: f64,
+        alt_type: AltType,
+    ) -> Result<Self, Wgs84Error> {
+        validate_latitude(lat_deg)?;
+        validate_longitude(lon_deg)?;
+        validate_finite("alt_m", alt_m).map_err(|_| Wgs84Error::InvalidAltitude(alt_m))?;
+        Ok(Self::new(lat_deg, lon_deg, alt_m, alt_type))
     }
 
     /// Latitude in decimal degrees.
@@ -75,7 +126,7 @@ pub struct Ned {
 }
 
 impl Ned {
-    /// Creates a local `NED` point in meters.
+    /// Creates an unchecked local `NED` point in meters.
     ///
     /// `d_m` is positive down.
     pub const fn new(n_m: f64, e_m: f64, d_m: f64, origin: Lla) -> Self {
@@ -85,6 +136,17 @@ impl Ned {
             d_m,
             origin,
         }
+    }
+
+    /// Creates a checked local `NED` point in meters.
+    ///
+    /// `d_m` is positive down.
+    pub fn try_new(n_m: f64, e_m: f64, d_m: f64, origin: Lla) -> Result<Self, Wgs84Error> {
+        validate_origin(origin)?;
+        validate_finite("n_m", n_m)?;
+        validate_finite("e_m", e_m)?;
+        validate_finite("d_m", d_m)?;
+        Ok(Self::new(n_m, e_m, d_m, origin))
     }
 
     /// North component in meters.
@@ -167,7 +229,7 @@ pub struct Enu {
 }
 
 impl Enu {
-    /// Creates a local `ENU` point in meters.
+    /// Creates an unchecked local `ENU` point in meters.
     ///
     /// `u_m` is positive up.
     pub const fn new(e_m: f64, n_m: f64, u_m: f64, origin: Lla) -> Self {
@@ -177,6 +239,17 @@ impl Enu {
             u_m,
             origin,
         }
+    }
+
+    /// Creates a checked local `ENU` point in meters.
+    ///
+    /// `u_m` is positive up.
+    pub fn try_new(e_m: f64, n_m: f64, u_m: f64, origin: Lla) -> Result<Self, Wgs84Error> {
+        validate_origin(origin)?;
+        validate_finite("e_m", e_m)?;
+        validate_finite("n_m", n_m)?;
+        validate_finite("u_m", u_m)?;
+        Ok(Self::new(e_m, n_m, u_m, origin))
     }
 
     /// East component in meters.
@@ -505,6 +578,34 @@ fn heading_enu(e0: &f64, n0: &f64, e1: &f64, n1: &f64) -> f64 {
     n.atan2(e)
 }
 
+fn validate_latitude(value: f64) -> Result<(), Wgs84Error> {
+    if !value.is_finite() || !(-90.0..=90.0).contains(&value) {
+        return Err(Wgs84Error::InvalidLatitude(value));
+    }
+    Ok(())
+}
+
+fn validate_longitude(value: f64) -> Result<(), Wgs84Error> {
+    if !value.is_finite() {
+        return Err(Wgs84Error::InvalidLongitude(value));
+    }
+    Ok(())
+}
+
+fn validate_finite(name: &'static str, value: f64) -> Result<(), Wgs84Error> {
+    if !value.is_finite() {
+        return Err(Wgs84Error::InvalidComponent { name, value });
+    }
+    Ok(())
+}
+
+fn validate_origin(origin: Lla) -> Result<(), Wgs84Error> {
+    validate_latitude(origin.lat_deg())?;
+    validate_longitude(origin.lon_deg())?;
+    validate_finite("origin.alt_m", origin.alt_m())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -512,6 +613,7 @@ mod tests {
     use super::{
         ecef_to_lla, ecef_to_ned, enu_to_lla, enu_to_ned_between_origins, euclidean_distance,
         lla_to_ecef, lla_to_ned_wgs84, ned_to_ecef, ned_to_lla_wgs84, AltType, Enu, Lla, Ned,
+        Wgs84Error,
     };
 
     #[test]
@@ -577,6 +679,32 @@ mod tests {
         assert!((ned.n() + 4.0).abs() < 1e-9);
         assert!((ned.e() - 12.0).abs() < 1e-9);
         assert!((ned.d() + 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn checked_constructors_validate_inputs() {
+        let valid_origin = Lla::try_new(39.0, -77.0, 200.0, AltType::Wgs84).unwrap();
+        let _ned = Ned::try_new(10.0, 20.0, -5.0, valid_origin).unwrap();
+        let _enu = Enu::try_new(10.0, 20.0, 5.0, valid_origin).unwrap();
+
+        let invalid_lat = Lla::try_new(120.0, -77.0, 200.0, AltType::Wgs84).unwrap_err();
+        assert!(matches!(invalid_lat, Wgs84Error::InvalidLatitude(_)));
+
+        let invalid_lon = Lla::try_new(39.0, f64::NAN, 200.0, AltType::Wgs84).unwrap_err();
+        assert!(matches!(invalid_lon, Wgs84Error::InvalidLongitude(_)));
+
+        let invalid_alt = Lla::try_new(39.0, -77.0, f64::INFINITY, AltType::Wgs84).unwrap_err();
+        assert!(matches!(invalid_alt, Wgs84Error::InvalidAltitude(_)));
+
+        let unchecked_bad_origin = Lla::new(999.0, 0.0, 0.0, AltType::Wgs84);
+        let ned_err = Ned::try_new(1.0, 2.0, 3.0, unchecked_bad_origin).unwrap_err();
+        assert!(matches!(ned_err, Wgs84Error::InvalidLatitude(_)));
+
+        let enu_err = Enu::try_new(f64::NAN, 2.0, 3.0, valid_origin).unwrap_err();
+        assert!(matches!(
+            enu_err,
+            Wgs84Error::InvalidComponent { name: "e_m", .. }
+        ));
     }
 
     #[test]

@@ -10,6 +10,9 @@ MAX_BYTES=$((5 * 1024 * 1024 * 1024))
 BASE_URL="https://s3.amazonaws.com/elevation-tiles-prod/skadi"
 DRY_RUN="false"
 FORCE="false"
+CHECKSUM_MANIFEST=""
+STRICT_CHECKSUM="false"
+SHA256_LOG=""
 
 usage() {
   cat <<'EOF'
@@ -25,6 +28,8 @@ Usage:
     --lon-min <deg> --lon-max <deg> \
     [--out-dir data/srtm] \
     [--max-size 5GB] \
+    [--sha256-manifest checksums.txt] \
+    [--strict-checksum] [--sha256-log hashes.txt] \
     [--dry-run] [--force]
 
 Examples:
@@ -39,6 +44,11 @@ Examples:
   # Dry run only (no downloads)
   ./scripts/download_hgt_tiles.sh \
     --lat-min 34 --lat-max 35 --lon-min -119 --lon-max -117 --dry-run
+
+Checksum manifest format:
+  <sha256>  <tile_filename>
+Example:
+  3c9ff...  N39W077.hgt
 EOF
 }
 
@@ -102,6 +112,30 @@ human_bytes() {
   }'
 }
 
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    fail "sha256sum/shasum is required for checksum verification"
+  fi
+}
+
+to_lower() {
+  echo "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+manifest_expected_hash() {
+  local tile="$1"
+  if [[ -z "$CHECKSUM_MANIFEST" ]]; then
+    echo ""
+    return 0
+  fi
+  awk -v tile="$tile" '$2 == tile { print $1; exit }' "$CHECKSUM_MANIFEST"
+}
+
 parse_size_bytes() {
   local raw="$1"
   local s num unit mult
@@ -159,6 +193,18 @@ while [[ $# -gt 0 ]]; do
       BASE_URL="$2"
       shift 2
       ;;
+    --sha256-manifest)
+      CHECKSUM_MANIFEST="$2"
+      shift 2
+      ;;
+    --strict-checksum)
+      STRICT_CHECKSUM="true"
+      shift
+      ;;
+    --sha256-log)
+      SHA256_LOG="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN="true"
       shift
@@ -195,7 +241,21 @@ have_cmd curl || fail "curl is required"
 have_cmd gzip || fail "gzip is required"
 have_cmd gunzip || fail "gunzip is required"
 
+if [[ "$STRICT_CHECKSUM" == "true" || -n "$CHECKSUM_MANIFEST" || -n "$SHA256_LOG" ]]; then
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    fail "sha256sum or shasum is required for checksum operations"
+  fi
+fi
+
+if [[ -n "$CHECKSUM_MANIFEST" && ! -f "$CHECKSUM_MANIFEST" ]]; then
+  fail "checksum manifest not found: $CHECKSUM_MANIFEST"
+fi
+
 mkdir -p "$OUT_DIR"
+if [[ -n "$SHA256_LOG" ]]; then
+  mkdir -p "$(dirname "$SHA256_LOG")"
+  : >"$SHA256_LOG"
+fi
 
 tile_list_file="$(mktemp)"
 tile_list_sorted="$(mktemp)"
@@ -283,6 +343,21 @@ while IFS= read -r tile; do
   remote_url="${BASE_URL}/${lat_band}/${tile}.gz"
 
   if [[ -f "$local_path" && "$FORCE" != "true" ]]; then
+    if [[ -n "$CHECKSUM_MANIFEST" || "$STRICT_CHECKSUM" == "true" || -n "$SHA256_LOG" ]]; then
+      actual_sha="$(sha256_file "$local_path")"
+      expected_sha="$(manifest_expected_hash "$tile")"
+      if [[ "$STRICT_CHECKSUM" == "true" && -z "$expected_sha" ]]; then
+        fail "strict checksum mode: no manifest hash entry for existing tile $tile"
+      fi
+      if [[ -n "$expected_sha" ]]; then
+        if [[ "$(to_lower "$actual_sha")" != "$(to_lower "$expected_sha")" ]]; then
+          fail "checksum mismatch for existing tile $tile"
+        fi
+      fi
+      if [[ -n "$SHA256_LOG" ]]; then
+        echo "${actual_sha}  ${tile}" >>"$SHA256_LOG"
+      fi
+    fi
     skipped_existing=$((skipped_existing + 1))
     continue
   fi
@@ -325,6 +400,19 @@ while IFS= read -r tile; do
 
   mv "$tmp_hgt" "$local_path"
   actual_size=$(file_size "$local_path")
+  actual_sha="$(sha256_file "$local_path")"
+  expected_sha="$(manifest_expected_hash "$tile")"
+  if [[ "$STRICT_CHECKSUM" == "true" && -z "$expected_sha" ]]; then
+    fail "strict checksum mode: no manifest hash entry for downloaded tile $tile"
+  fi
+  if [[ -n "$expected_sha" ]]; then
+    if [[ "$(to_lower "$actual_sha")" != "$(to_lower "$expected_sha")" ]]; then
+      fail "checksum mismatch for downloaded tile $tile"
+    fi
+  fi
+  if [[ -n "$SHA256_LOG" ]]; then
+    echo "${actual_sha}  ${tile}" >>"$SHA256_LOG"
+  fi
   current_bytes=$((current_bytes + actual_size))
   downloaded=$((downloaded + 1))
   echo "Downloaded ${tile} ($(human_bytes "$actual_size")), total=$(human_bytes "$current_bytes")"

@@ -16,7 +16,7 @@
 [dependencies]
 small_world = { path = "../small_world" }
 # or:
-# small_world = { git = "https://github.com/Swarm-Command/small_world.git", branch = "codex" }
+# small_world = { git = "https://github.com/Swarm-Command/small_world.git", branch = "main" }
 ```
 
 ## Frame contract
@@ -86,11 +86,24 @@ Local/global transforms:
 This repo validates transformations against independent external oracles:
 - PROJ `cct` (frame/vertical transforms)
 - GDAL `gdallocationinfo` (terrain interpolation)
+- Real-terrain oracle checks (not synthetic-only)
+- Checksum-pinned real-terrain oracle tile (`data/oracle_srtm_sha256.txt`)
 
 Current observed max error in oracle differential tests is millimeter-scale (for example `0.004438 m` in `AGL/MSL/HAE` matrix checks).
+
+Performance is also gated in CI with dataset-backed workloads:
+- Real `EGM96` + real `.hgt` code paths (no constant/mock providers)
+- Throughput + p95 latency metrics for altitude, terrain, and WGS84 transforms
+- FFI contention/scaling metrics (`1-thread`, `8-thread shared-handle`, `8-thread per-thread handles`)
+
+C++ concurrency guidance:
+- Shared converter handles are thread-safe but serialize on an internal mutex.
+- For high throughput, use one converter handle per thread.
 
 ## More docs
 
 - Production and validation details: [`docs/PRODUCTION.md`](docs/PRODUCTION.md)
 - C++ and CMake integration walkthrough: [`examples/cpp/README.md`](examples/cpp/README.md)
 - Canonical compact example: [`examples/minimal_frame_conversion.rs`](examples/minimal_frame_conversion.rs)
+- Performance gate runner: [`scripts/run_perf_smoke.sh`](scripts/run_perf_smoke.sh)
+- C ABI/header sync checker: [`scripts/verify_c_header_sync.sh`](scripts/verify_c_header_sync.sh)

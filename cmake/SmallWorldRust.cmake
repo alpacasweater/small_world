@@ -68,12 +68,28 @@ function(small_world_add_rust_library)
   set(_stamp "${SW_CARGO_TARGET_DIR}/${SW_TARGET}_${_profile_dir}_${_linkage_lower}.stamp")
   set(_cargo_target "${SW_TARGET}_cargo_build")
 
+  file(GLOB_RECURSE _rust_source_files CONFIGURE_DEPENDS
+    "${SW_MANIFEST_DIR}/src/*.rs"
+    "${SW_MANIFEST_DIR}/include/*.h"
+  )
+  set(_cargo_dep_files
+    "${_manifest_path}"
+    ${_rust_source_files}
+  )
+  if(EXISTS "${SW_MANIFEST_DIR}/Cargo.lock")
+    list(APPEND _cargo_dep_files "${SW_MANIFEST_DIR}/Cargo.lock")
+  endif()
+  if(EXISTS "${SW_MANIFEST_DIR}/build.rs")
+    list(APPEND _cargo_dep_files "${SW_MANIFEST_DIR}/build.rs")
+  endif()
+
   add_custom_command(
     OUTPUT "${_stamp}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${SW_CARGO_TARGET_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${SW_CARGO_TARGET_DIR}" "${SW_CARGO_EXECUTABLE}" ${_cargo_args}
     COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
     WORKING_DIRECTORY "${SW_MANIFEST_DIR}"
+    DEPENDS ${_cargo_dep_files}
     BYPRODUCTS "${_artifact_file}"
     COMMENT "Building Rust small_world library (${_profile_lower}, ${_linkage_lower})"
     VERBATIM
