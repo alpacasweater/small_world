@@ -1,5 +1,6 @@
 /target
 data/*.download
+data/srtm/
 data/EGM2008_2_5.DAC
 scripts/__pycache__/
 fuzz/artifacts/

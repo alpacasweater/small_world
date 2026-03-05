@@ -1,3 +1,10 @@
+//! WGS84 local/global frame transforms.
+//!
+//! This module exposes explicit types for:
+//! - absolute geodetic coordinates: [`crate::wgs84::Lla`] (`lat/lon` degrees + `HAE` meters)
+//! - local North-East-Down coordinates: [`crate::wgs84::Ned`] (`d` positive down)
+//! - local East-North-Up coordinates: [`crate::wgs84::Enu`] (`u` positive up)
+
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 
@@ -27,6 +34,7 @@ pub struct Lla {
 }
 
 impl Lla {
+    /// Creates a geodetic coordinate (`lat_deg`, `lon_deg`, `alt_m`) with explicit altitude type.
     pub const fn new(lat_deg: f64, lon_deg: f64, alt_m: f64, alt_type: AltType) -> Self {
         Self {
             lat_deg,
@@ -36,18 +44,22 @@ impl Lla {
         }
     }
 
+    /// Latitude in decimal degrees.
     pub const fn lat_deg(&self) -> f64 {
         self.lat_deg
     }
 
+    /// Longitude in decimal degrees.
     pub const fn lon_deg(&self) -> f64 {
         self.lon_deg
     }
 
+    /// Altitude in meters, interpreted by [`Self::alt_type`].
     pub const fn alt_m(&self) -> f64 {
         self.alt_m
     }
 
+    /// Altitude datum/type for [`Self::alt_m`].
     pub const fn alt_type(&self) -> AltType {
         self.alt_type
     }
@@ -63,6 +75,9 @@ pub struct Ned {
 }
 
 impl Ned {
+    /// Creates a local `NED` point in meters.
+    ///
+    /// `d_m` is positive down.
     pub const fn new(n_m: f64, e_m: f64, d_m: f64, origin: Lla) -> Self {
         Self {
             n_m,
@@ -72,18 +87,22 @@ impl Ned {
         }
     }
 
+    /// North component in meters.
     pub const fn n(&self) -> f64 {
         self.n_m
     }
 
+    /// East component in meters.
     pub const fn e(&self) -> f64 {
         self.e_m
     }
 
+    /// Down component in meters (positive down).
     pub const fn d(&self) -> f64 {
         self.d_m
     }
 
+    /// Origin geodetic point for this local frame.
     pub const fn origin(&self) -> Lla {
         self.origin
     }
@@ -148,6 +167,9 @@ pub struct Enu {
 }
 
 impl Enu {
+    /// Creates a local `ENU` point in meters.
+    ///
+    /// `u_m` is positive up.
     pub const fn new(e_m: f64, n_m: f64, u_m: f64, origin: Lla) -> Self {
         Self {
             e_m,
@@ -157,18 +179,22 @@ impl Enu {
         }
     }
 
+    /// East component in meters.
     pub const fn e(&self) -> f64 {
         self.e_m
     }
 
+    /// North component in meters.
     pub const fn n(&self) -> f64 {
         self.n_m
     }
 
+    /// Up component in meters (positive up).
     pub const fn u(&self) -> f64 {
         self.u_m
     }
 
+    /// Origin geodetic point for this local frame.
     pub const fn origin(&self) -> Lla {
         self.origin
     }

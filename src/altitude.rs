@@ -1,3 +1,9 @@
+//! Altitude conversion primitives with explicit vertical frame semantics.
+//!
+//! This module intentionally requires explicit source/target frames for every conversion.
+//! Use [`crate::altitude::AltitudeConverter::convert_height_m`] as the primary API for scalar
+//! values.
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -47,29 +53,38 @@ pub struct AltitudeSample {
 }
 
 impl AltitudeSample {
+    /// Creates a typed altitude sample in meters with an explicit frame.
     pub fn new(meters: f64, frame: VerticalFrame) -> Result<Self, AltitudeError> {
         validate_height("meters", meters)?;
         Ok(Self { meters, frame })
     }
 
+    /// Convenience constructor for an `AGL` sample in meters.
     pub fn agl_m(meters: f64) -> Result<Self, AltitudeError> {
         Self::new(meters, VerticalFrame::Agl)
     }
 
+    /// Convenience constructor for an `MSL` sample in meters.
     pub fn msl_m(meters: f64) -> Result<Self, AltitudeError> {
         Self::new(meters, VerticalFrame::Msl)
     }
 
+    /// Convenience constructor for an `HAE` sample in meters.
     pub fn hae_m(meters: f64) -> Result<Self, AltitudeError> {
         Self::new(meters, VerticalFrame::Hae)
     }
 }
 
+/// Errors returned by altitude conversion and reference queries.
 #[derive(Debug)]
 pub enum AltitudeError {
+    /// Failed geoid lookup or interpolation.
     Geoid(EgmError),
+    /// Failed terrain lookup or interpolation.
     Terrain(TerrainError),
+    /// Invalid geographic coordinate argument.
     InvalidCoordinate { name: &'static str, value: f64 },
+    /// Invalid altitude/height argument.
     InvalidHeight { name: &'static str, value: f64 },
 }
 
@@ -111,7 +126,9 @@ impl From<TerrainError> for AltitudeError {
     }
 }
 
+/// Interface for geoid separation providers (`N` in `HAE = MSL + N`).
 pub trait GeoidProvider {
+    /// Returns geoid separation in meters at `(lat_deg, lon_deg)`.
     fn geoid_offset_m(
         &self,
         lat_deg: f64,
@@ -120,7 +137,9 @@ pub trait GeoidProvider {
     ) -> Result<f64, AltitudeError>;
 }
 
+/// Interface for terrain providers (`ground_msl` in `MSL = ground_msl + AGL`).
 pub trait TerrainProvider {
+    /// Returns terrain elevation in orthometric MSL meters at `(lat_deg, lon_deg)`.
     fn terrain_msl_m(
         &self,
         lat_deg: f64,
@@ -213,26 +232,31 @@ where
         }
     }
 
+    /// Sets interpolation mode for geoid offset queries.
     pub fn with_geoid_interpolation(mut self, interpolation: Interpolation) -> Self {
         self.geoid_interpolation = interpolation;
         self
     }
 
+    /// Sets interpolation mode for terrain elevation queries.
     pub fn with_terrain_interpolation(mut self, interpolation: Interpolation) -> Self {
         self.terrain_interpolation = interpolation;
         self
     }
 
+    /// Geoid separation (`N`) in meters at `(lat_deg, lon_deg)`.
     pub fn geoid_offset_m(&self, lat_deg: f64, lon_deg: f64) -> Result<f64, AltitudeError> {
         self.geoid
             .geoid_offset_m(lat_deg, lon_deg, self.geoid_interpolation)
     }
 
+    /// Terrain orthometric elevation in MSL meters at `(lat_deg, lon_deg)`.
     pub fn ground_msl_m(&self, lat_deg: f64, lon_deg: f64) -> Result<f64, AltitudeError> {
         self.terrain
             .terrain_msl_m(lat_deg, lon_deg, self.terrain_interpolation)
     }
 
+    /// Returns all base reference terms used for frame conversion at `(lat_deg, lon_deg)`.
     pub fn reference(&self, lat_deg: f64, lon_deg: f64) -> Result<TerrainReference, AltitudeError> {
         let geoid_offset_m = self.geoid_offset_m(lat_deg, lon_deg)?;
         let ground_msl_m = self.ground_msl_m(lat_deg, lon_deg)?;
@@ -244,6 +268,7 @@ where
         })
     }
 
+    /// Point-typed variant of [`Self::reference`].
     pub fn reference_at(&self, point: GeoPoint) -> Result<TerrainReference, AltitudeError> {
         self.reference(point.lat_deg, point.lon_deg)
     }
@@ -320,6 +345,7 @@ where
         ))
     }
 
+    /// Converts orthometric `MSL` meters into WGS84 ellipsoidal `HAE` meters.
     pub fn hae_from_msl(
         &self,
         lat_deg: f64,
@@ -331,6 +357,7 @@ where
         Ok(msl_m + geoid_offset_m)
     }
 
+    /// Converts WGS84 ellipsoidal `HAE` meters into orthometric `MSL` meters.
     pub fn msl_from_hae(
         &self,
         lat_deg: f64,
@@ -342,6 +369,7 @@ where
         Ok(hae_m - geoid_offset_m)
     }
 
+    /// Converts local terrain-relative `AGL` meters into orthometric `MSL` meters.
     pub fn msl_from_agl(
         &self,
         lat_deg: f64,
@@ -353,6 +381,7 @@ where
         Ok(ground_msl_m + agl_m)
     }
 
+    /// Converts orthometric `MSL` meters into local terrain-relative `AGL` meters.
     pub fn agl_from_msl(
         &self,
         lat_deg: f64,
@@ -364,6 +393,7 @@ where
         Ok(msl_m - ground_msl_m)
     }
 
+    /// Converts local terrain-relative `AGL` meters into WGS84 ellipsoidal `HAE` meters.
     pub fn hae_from_agl(
         &self,
         lat_deg: f64,
@@ -374,6 +404,7 @@ where
         self.hae_from_msl(lat_deg, lon_deg, msl_m)
     }
 
+    /// Converts WGS84 ellipsoidal `HAE` meters into local terrain-relative `AGL` meters.
     pub fn agl_from_hae(
         &self,
         lat_deg: f64,

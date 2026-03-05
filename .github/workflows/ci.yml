@@ -24,13 +24,13 @@ jobs:
       - name: Install PROJ Oracle Tool
         run: |
           sudo apt-get update
-          sudo apt-get install -y proj-bin
+          sudo apt-get install -y proj-bin proj-data gdal-bin
 
       - name: Unit And Property Tests
         run: cargo test
 
-      - name: Oracle Differential Tests (PROJ)
-        run: SMALL_WORLD_REQUIRE_PROJ=1 cargo test --test oracle_proj -- --nocapture
+      - name: Oracle Validation (Analytic + PROJ)
+        run: ./scripts/run_oracle_validation.sh
 
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings

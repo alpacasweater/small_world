@@ -1,3 +1,5 @@
+//! Terrain elevation queries from SRTM `.hgt` tiles with bounded caching and explicit void policy.
+
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};

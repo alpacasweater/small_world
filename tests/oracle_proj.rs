@@ -1,11 +1,12 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use small_world::wgs84::{AltType, Lla, Ned};
+use small_world::wgs84::{AltType, Enu, Lla, Ned};
 
 const EARTH_MEAN_RADIUS_M: f64 = 6_371_008.8;
 const ORIGIN_COUNT: usize = 36;
 const POINTS_PER_ORIGIN: usize = 8;
+const ENU_NED_CASE_COUNT: usize = 24;
 const HORIZONTAL_TOLERANCE_M: f64 = 0.03;
 const VERTICAL_TOLERANCE_M: f64 = 0.03;
 const NED_COMPONENT_TOLERANCE_M: f64 = 0.04;
@@ -202,6 +203,23 @@ fn proj_ned_to_lla(origin: OracleLla, points: &[OracleNed]) -> Result<Vec<Oracle
     Ok(lla)
 }
 
+fn proj_enu_to_lla(origin: OracleLla, points: &[OracleEnu]) -> Result<Vec<OracleLla>, String> {
+    let mut rows = Vec::with_capacity(points.len());
+    for point in points {
+        rows.push([point.e_m, point.n_m, point.u_m]);
+    }
+    let lla_rows = cct_transform_rows(origin, &rows, true)?;
+    let mut lla = Vec::with_capacity(lla_rows.len());
+    for row in lla_rows {
+        lla.push(OracleLla {
+            lon_deg: row[0],
+            lat_deg: row[1],
+            hae_m: row[2],
+        });
+    }
+    Ok(lla)
+}
+
 fn sample_origin(seed: &mut u64) -> OracleLla {
     OracleLla {
         lat_deg: uniform(seed, -80.0, 80.0),
@@ -226,6 +244,14 @@ fn sample_ned(seed: &mut u64) -> OracleNed {
         n_m: uniform(seed, -50_000.0, 50_000.0),
         e_m: uniform(seed, -50_000.0, 50_000.0),
         d_m: uniform(seed, -10_000.0, 10_000.0),
+    }
+}
+
+fn sample_enu(seed: &mut u64) -> OracleEnu {
+    OracleEnu {
+        e_m: uniform(seed, -50_000.0, 50_000.0),
+        n_m: uniform(seed, -50_000.0, 50_000.0),
+        u_m: uniform(seed, -10_000.0, 10_000.0),
     }
 }
 
@@ -398,6 +424,9 @@ fn datum_edge_cases_match_proj_oracle() -> Result<(), String> {
         },
     ];
 
+    let mut max_horizontal_m = 0.0_f64;
+    let mut max_vertical_m = 0.0_f64;
+
     for origin in origins {
         let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m, AltType::Wgs84);
         let ned_samples: Vec<OracleNed> = offsets
@@ -425,6 +454,8 @@ fn datum_edge_cases_match_proj_oracle() -> Result<(), String> {
 
             let horizontal_m = lat_lon_to_horizontal_error_m(our_lla, oracle_lla);
             let vertical_m = (our_lla.hae_m - oracle_lla.hae_m).abs();
+            max_horizontal_m = max_horizontal_m.max(horizontal_m);
+            max_vertical_m = max_vertical_m.max(vertical_m);
             if horizontal_m > HORIZONTAL_TOLERANCE_M || vertical_m > VERTICAL_TOLERANCE_M {
                 return Err(format!(
                     "edge-case mismatch: horizontal={horizontal_m:.6} m vertical={vertical_m:.6} m \
@@ -440,5 +471,79 @@ fn datum_edge_cases_match_proj_oracle() -> Result<(), String> {
         }
     }
 
+    eprintln!(
+        "max edge-case LLA error vs PROJ oracle: horizontal={max_horizontal_m:.6} m vertical={max_vertical_m:.6} m"
+    );
+    Ok(())
+}
+
+#[test]
+fn enu_to_ned_between_origins_matches_proj_oracle() -> Result<(), String> {
+    if skip_if_proj_unavailable() {
+        return Ok(());
+    }
+
+    let mut seed = 0xA076_1D64_78BD_642F;
+    let mut max_component_err = 0.0_f64;
+
+    for _ in 0..ENU_NED_CASE_COUNT {
+        let enu_origin = sample_origin(&mut seed);
+        let ned_origin = sample_origin(&mut seed);
+        let enu_origin_lla = Lla::new(
+            enu_origin.lat_deg,
+            enu_origin.lon_deg,
+            enu_origin.hae_m,
+            AltType::Wgs84,
+        );
+        let ned_origin_lla = Lla::new(
+            ned_origin.lat_deg,
+            ned_origin.lon_deg,
+            ned_origin.hae_m,
+            AltType::Wgs84,
+        );
+
+        let mut enu_points = Vec::with_capacity(POINTS_PER_ORIGIN);
+        for _ in 0..POINTS_PER_ORIGIN {
+            enu_points.push(sample_enu(&mut seed));
+        }
+
+        let oracle_lla = proj_enu_to_lla(enu_origin, &enu_points)?;
+        let oracle_ned = proj_lla_to_ned(ned_origin, &oracle_lla)?;
+
+        for (enu, oracle) in enu_points.iter().zip(oracle_ned.iter()) {
+            let our = Enu::new(enu.e_m, enu.n_m, enu.u_m, enu_origin_lla).to_ned(ned_origin_lla);
+            let component_err = (our.n() - oracle.n_m)
+                .abs()
+                .max((our.e() - oracle.e_m).abs())
+                .max((our.d() - oracle.d_m).abs());
+            max_component_err = max_component_err.max(component_err);
+
+            if component_err > NED_COMPONENT_TOLERANCE_M {
+                return Err(format!(
+                    "ENU->NED mismatch above tolerance: err={component_err:.6} m \
+                     (our n/e/d={:.6}/{:.6}/{:.6}, oracle n/e/d={:.6}/{:.6}/{:.6}) \
+                     enu=({:.6},{:.6},{:.6}) enu_origin=({:.8},{:.8},{:.3}) \
+                     ned_origin=({:.8},{:.8},{:.3})",
+                    our.n(),
+                    our.e(),
+                    our.d(),
+                    oracle.n_m,
+                    oracle.e_m,
+                    oracle.d_m,
+                    enu.e_m,
+                    enu.n_m,
+                    enu.u_m,
+                    enu_origin.lat_deg,
+                    enu_origin.lon_deg,
+                    enu_origin.hae_m,
+                    ned_origin.lat_deg,
+                    ned_origin.lon_deg,
+                    ned_origin.hae_m
+                ));
+            }
+        }
+    }
+
+    eprintln!("max ENU->NED component error vs PROJ oracle: {max_component_err:.6} m");
     Ok(())
 }

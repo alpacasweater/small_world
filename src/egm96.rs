@@ -1,3 +1,5 @@
+//! EGM geoid grid readers and interpolation for EGM96/EGM2008 datasets.
+
 use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::{Display, Formatter};

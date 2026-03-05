@@ -1,3 +1,5 @@
+//! Stable C ABI surface for C/C++ consumers.
+
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
