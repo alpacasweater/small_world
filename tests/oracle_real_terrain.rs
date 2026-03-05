@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
 use small_world::egm96::EGM96;
+use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
 
 const GEOID_PATH: &str = "data/WW15MGH.DAC";
@@ -116,15 +117,32 @@ fn skip_if_oracles_missing() -> bool {
     true
 }
 
-fn query_gdal_bilinear(tile_path: &Path, lat_deg: f64, lon_deg: f64) -> Result<f64, String> {
-    let output = Command::new("gdallocationinfo")
-        .arg("-valonly")
-        .arg("-r")
-        .arg("bilinear")
-        .arg("-wgs84")
+fn gdal_supports_resampling_flag() -> bool {
+    let output = match Command::new("gdallocationinfo").arg("--help").output() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text.contains("[-r") || text.contains(" -r ")
+}
+
+fn query_gdal_height(
+    tile_path: &Path,
+    lat_deg: f64,
+    lon_deg: f64,
+    use_bilinear: bool,
+) -> Result<f64, String> {
+    let mut cmd = Command::new("gdallocationinfo");
+    cmd.arg("-valonly");
+    if use_bilinear {
+        cmd.arg("-r").arg("bilinear");
+    }
+    cmd.arg("-wgs84")
         .arg(tile_path)
         .arg(format!("{lon_deg:.15}"))
-        .arg(format!("{lat_deg:.15}"))
+        .arg(format!("{lat_deg:.15}"));
+    let output = cmd
         .output()
         .map_err(|err| format!("failed to execute gdallocationinfo: {err}"))?;
 
@@ -246,10 +264,17 @@ fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
 
     let all_points: Vec<(f64, f64)> = cases.iter().map(|(_, lat, lon)| (*lat, *lon)).collect();
     let geoid_oracle = query_proj_geoid_offsets(&all_points)?;
+    let use_bilinear = gdal_supports_resampling_flag();
+    let terrain_interp = if use_bilinear {
+        Interpolation::Bilinear
+    } else {
+        Interpolation::Nearest
+    };
 
     let geoid = EGM96::new(geoid_path).map_err(|err| format!("failed opening geoid: {err}"))?;
     let terrain = SrtmDataset::new("data/srtm");
-    let converter = AltitudeConverter::new(&geoid, &terrain);
+    let converter =
+        AltitudeConverter::new(&geoid, &terrain).with_terrain_interpolation(terrain_interp);
 
     let mut max_ground_err = 0.0_f64;
     let mut max_geoid_err = 0.0_f64;
@@ -262,7 +287,7 @@ fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
         let ground_ours = converter
             .ground_msl_m(*lat_deg, *lon_deg)
             .map_err(|err| err.to_string())?;
-        let ground_gdal = query_gdal_bilinear(tile_path, *lat_deg, *lon_deg)?;
+        let ground_gdal = query_gdal_height(tile_path, *lat_deg, *lon_deg, use_bilinear)?;
         max_ground_err = max_ground_err.max((ground_ours - ground_gdal).abs());
 
         let geoid_ours = converter

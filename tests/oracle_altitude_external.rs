@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
 use small_world::egm96::EGM96;
+use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
 
 const ORACLE_SAMPLE_COUNT: usize = 96;
@@ -88,15 +89,32 @@ fn uniform(seed: &mut u64, min: f64, max: f64) -> f64 {
     min + (max - min) * next_unit(seed)
 }
 
-fn query_gdal_bilinear(tile_path: &Path, lat_deg: f64, lon_deg: f64) -> Result<f64, String> {
-    let output = Command::new("gdallocationinfo")
-        .arg("-valonly")
-        .arg("-r")
-        .arg("bilinear")
-        .arg("-wgs84")
+fn gdal_supports_resampling_flag() -> bool {
+    let output = match Command::new("gdallocationinfo").arg("--help").output() {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text.contains("[-r") || text.contains(" -r ")
+}
+
+fn query_gdal_height(
+    tile_path: &Path,
+    lat_deg: f64,
+    lon_deg: f64,
+    use_bilinear: bool,
+) -> Result<f64, String> {
+    let mut cmd = Command::new("gdallocationinfo");
+    cmd.arg("-valonly");
+    if use_bilinear {
+        cmd.arg("-r").arg("bilinear");
+    }
+    cmd.arg("-wgs84")
         .arg(tile_path)
         .arg(format!("{lon_deg:.15}"))
-        .arg(format!("{lat_deg:.15}"))
+        .arg(format!("{lat_deg:.15}"));
+    let output = cmd
         .output()
         .map_err(|err| format!("failed to execute gdallocationinfo: {err}"))?;
 
@@ -193,7 +211,14 @@ fn altitude_conversions_match_proj_and_gdal_oracles() -> Result<(), String> {
     let hgt_path = write_linear_hgt_tile(&root, 1201);
     let terrain = SrtmDataset::new(&root);
     let egm96 = EGM96::new(egm_path).map_err(|err| format!("failed opening egm96: {err}"))?;
-    let converter = AltitudeConverter::new(&egm96, &terrain);
+    let use_bilinear = gdal_supports_resampling_flag();
+    let terrain_interp = if use_bilinear {
+        Interpolation::Bilinear
+    } else {
+        Interpolation::Nearest
+    };
+    let converter =
+        AltitudeConverter::new(&egm96, &terrain).with_terrain_interpolation(terrain_interp);
 
     let mut seed = 0xD1B5_4A32_D192_ED03;
     let mut points = Vec::with_capacity(ORACLE_SAMPLE_COUNT);
@@ -212,7 +237,7 @@ fn altitude_conversions_match_proj_and_gdal_oracles() -> Result<(), String> {
     let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
     for (idx, (lat_deg, lon_deg)) in points.iter().enumerate() {
         let point = GeoPoint::new(*lat_deg, *lon_deg).map_err(|err| err.to_string())?;
-        let ground_msl_m = query_gdal_bilinear(&hgt_path, *lat_deg, *lon_deg)?;
+        let ground_msl_m = query_gdal_height(&hgt_path, *lat_deg, *lon_deg, use_bilinear)?;
         let geoid_offset_m = geoid_offsets[idx];
         let input_m = uniform(&mut seed, -1000.0, 20_000.0);
 
