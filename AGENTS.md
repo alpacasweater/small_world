@@ -4,9 +4,9 @@
 Project handoff memory for `small_world`.
 Use this file to restore context quickly, preserve API decisions, and keep frame semantics unambiguous.
 
-## Snapshot (2026-03-03)
-- Branch: `codex`
-- Last known synced commit: `a44e1c5` on `origin/codex`
+## Snapshot (2026-03-05)
+- Branch: `main`
+- Last known synced commit: `8a9790f` on `origin/main`
 - Product direction: production-ready, converter-first altitude API
 
 ## What Was Decided
@@ -63,6 +63,8 @@ Rules:
   - EGM2008: `data/EGM2008_2_5.DAC`
 - Terrain:
   - SRTM HGT through `SrtmDataset`
+  - Oracle real-terrain validation corpus pinned by `data/oracle_srtm_sha256.txt`:
+    - `N39W077`, `N35E139`, `N37E127`, `S33E151`, `S22W043`, `N51E000`, `N27E086`
 
 Git policy:
 - Keep large datasets out of git history.
@@ -98,6 +100,14 @@ Git policy:
 - `scripts/download_hgt_tiles.sh`: bbox-based SRTM `.hgt` downloader with size cap (default 5 GiB)
 - `scripts/run_oracle_validation.sh`: local/CI oracle validation entrypoint
 - `Readme.md`: user docs and conversion matrices
+
+## CI Topology
+- `stable-checks` (Ubuntu): full gates including oracle + perf + docs.
+- `cross-platform-smoke` (Linux/macOS/Windows):
+  - `cargo check`, `cargo test --lib`
+  - dataset-backed `perf_smoke` example run
+  - CMake C++ build + `ctest` runtime smoke
+  - macOS lane also runs PROJ oracle smoke (`oracle_proj`)
 
 ## Canonical Example Contract
 `examples/minimal_frame_conversion.rs` should demonstrate, in minimal readable code:

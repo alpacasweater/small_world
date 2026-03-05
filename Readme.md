@@ -86,10 +86,18 @@ Local/global transforms:
 This repo validates transformations against independent external oracles:
 - PROJ `cct` (frame/vertical transforms)
 - GDAL `gdallocationinfo` (terrain interpolation)
-- Real-terrain oracle checks (not synthetic-only)
-- Checksum-pinned real-terrain oracle tile (`data/oracle_srtm_sha256.txt`)
+- Real-terrain oracle checks (not synthetic-only, multi-region corpus)
+- Checksum-pinned real-terrain oracle tiles (`data/oracle_srtm_sha256.txt`)
+
+Current real-terrain corpus spans 7 regions:
+- `N39W077` (United States), `N35E139` (Japan), `N37E127` (South Korea)
+- `S33E151` (Australia), `S22W043` (Brazil), `N51E000` (United Kingdom), `N27E086` (Nepal)
 
 Current observed max error in oracle differential tests is millimeter-scale (for example `0.004438 m` in `AGL/MSL/HAE` matrix checks).
+
+Accuracy note:
+- No geospatial implementation can provide absolute certainty for every point on Earth.
+- This crate provides high confidence through independent differential oracles and explicit frame semantics, with measured bounded error on validated corpora.
 
 Performance is also gated in CI with dataset-backed workloads:
 - Real `EGM96` + real `.hgt` code paths (no constant/mock providers)

@@ -81,6 +81,17 @@ jobs:
       - name: Unit Tests (Library Only)
         run: cargo test --lib
 
+      - name: Performance Smoke (Cross-platform)
+        run: cargo run --release --example perf_smoke -- --json-out target/perf_smoke_metrics_${{ matrix.os }}.json
+
+      - name: Install PROJ (macOS Oracle Smoke)
+        if: matrix.os == 'macos-latest'
+        run: brew install proj
+
+      - name: Oracle PROJ Smoke (macOS)
+        if: matrix.os == 'macos-latest'
+        run: SMALL_WORLD_REQUIRE_PROJ=1 cargo test --test oracle_proj -- --nocapture
+
       - name: CMake C++ Smoke Build
         run: |
           cmake -S examples/cpp -B build/cpp-smoke -DCMAKE_BUILD_TYPE=Release
@@ -88,3 +99,10 @@ jobs:
 
       - name: C++ Runtime Smoke Test
         run: ctest --test-dir build/cpp-smoke -C Release --output-on-failure
+
+      - name: Upload Cross-Platform Perf Metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke-${{ matrix.os }}
+          path: target/perf_smoke_metrics_${{ matrix.os }}.json

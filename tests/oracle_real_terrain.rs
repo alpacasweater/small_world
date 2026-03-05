@@ -1,16 +1,82 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
 use small_world::egm96::EGM96;
 use small_world::terrain::SrtmDataset;
 
-const TERRAIN_TILE_PATH: &str = "data/srtm/N39W077.hgt";
 const GEOID_PATH: &str = "data/WW15MGH.DAC";
 const GROUND_MSL_TOLERANCE_M: f64 = 0.05;
 const GEOID_TOLERANCE_M: f64 = 0.05;
 const HEIGHT_TOLERANCE_M: f64 = 0.05;
+
+#[derive(Clone, Copy)]
+struct RegionCase {
+    tile: &'static str,
+    points: &'static [(f64, f64)],
+}
+
+const REGION_CASES: &[RegionCase] = &[
+    RegionCase {
+        tile: "N39W077.hgt",
+        points: &[
+            (39.05, -76.95),
+            (39.20, -76.80),
+            (39.40, -76.60),
+            (39.55, -76.45),
+        ],
+    },
+    RegionCase {
+        tile: "N35E139.hgt",
+        points: &[
+            (35.10, 139.10),
+            (35.25, 139.25),
+            (35.45, 139.45),
+            (35.70, 139.70),
+        ],
+    },
+    RegionCase {
+        tile: "N37E127.hgt",
+        points: &[
+            (37.10, 127.10),
+            (37.30, 127.30),
+            (37.50, 127.50),
+            (37.75, 127.75),
+        ],
+    },
+    RegionCase {
+        tile: "S33E151.hgt",
+        points: &[
+            (-32.95, 151.05),
+            (-32.80, 151.20),
+            (-32.60, 151.40),
+            (-32.35, 151.65),
+        ],
+    },
+    RegionCase {
+        tile: "S22W043.hgt",
+        points: &[
+            (-21.95, -42.95),
+            (-21.80, -42.80),
+            (-21.60, -42.60),
+            (-21.35, -42.35),
+        ],
+    },
+    RegionCase {
+        tile: "N51E000.hgt",
+        points: &[(51.05, 0.05), (51.20, 0.20), (51.40, 0.40), (51.70, 0.70)],
+    },
+    RegionCase {
+        tile: "N27E086.hgt",
+        points: &[
+            (27.05, 86.05),
+            (27.20, 86.20),
+            (27.40, 86.40),
+            (27.70, 86.70),
+        ],
+    },
+];
 
 fn command_exists(name: &str) -> bool {
     Command::new(name)
@@ -138,24 +204,33 @@ fn query_proj_geoid_offsets(points: &[(f64, f64)]) -> Result<Vec<f64>, String> {
     Ok(offsets)
 }
 
+fn gather_cases() -> Result<Vec<(PathBuf, f64, f64)>, String> {
+    let mut gathered = Vec::new();
+    for case in REGION_CASES {
+        let tile_path = Path::new("data/srtm").join(case.tile);
+        if !tile_path.exists() {
+            if require_oracles() {
+                return Err(format!(
+                    "required real-terrain tile missing: {}",
+                    tile_path.display()
+                ));
+            }
+            eprintln!(
+                "skipping real-terrain oracle test because {} is missing",
+                tile_path.display()
+            );
+            return Ok(Vec::new());
+        }
+        for (lat, lon) in case.points {
+            gathered.push((tile_path.clone(), *lat, *lon));
+        }
+    }
+    Ok(gathered)
+}
+
 #[test]
 fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
     if skip_if_oracles_missing() {
-        return Ok(());
-    }
-
-    let terrain_tile = Path::new(TERRAIN_TILE_PATH);
-    if !terrain_tile.exists() {
-        if require_oracles() {
-            return Err(format!(
-                "required real-terrain tile missing: {}",
-                terrain_tile.display()
-            ));
-        }
-        eprintln!(
-            "skipping real-terrain oracle test because {} is missing",
-            terrain_tile.display()
-        );
         return Ok(());
     }
 
@@ -164,40 +239,30 @@ fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
         return Err(format!("missing geoid dataset: {}", geoid_path.display()));
     }
 
-    let points = [
-        (39.05, -76.95),
-        (39.10, -76.90),
-        (39.15, -76.85),
-        (39.20, -76.80),
-        (39.25, -76.75),
-        (39.30, -76.70),
-        (39.35, -76.65),
-        (39.40, -76.60),
-        (39.45, -76.55),
-        (39.50, -76.50),
-        (39.55, -76.45),
-        (39.60, -76.40),
-    ];
+    let cases = gather_cases()?;
+    if cases.is_empty() {
+        return Ok(());
+    }
+
+    let all_points: Vec<(f64, f64)> = cases.iter().map(|(_, lat, lon)| (*lat, *lon)).collect();
+    let geoid_oracle = query_proj_geoid_offsets(&all_points)?;
 
     let geoid = EGM96::new(geoid_path).map_err(|err| format!("failed opening geoid: {err}"))?;
     let terrain = SrtmDataset::new("data/srtm");
     let converter = AltitudeConverter::new(&geoid, &terrain);
 
-    let geoid_oracle = query_proj_geoid_offsets(&points)?;
-
     let mut max_ground_err = 0.0_f64;
     let mut max_geoid_err = 0.0_f64;
     let mut max_height_err = 0.0_f64;
-
     let test_msl = 350.0;
 
-    for (i, (lat_deg, lon_deg)) in points.iter().enumerate() {
+    for (i, (tile_path, lat_deg, lon_deg)) in cases.iter().enumerate() {
         let point = GeoPoint::new(*lat_deg, *lon_deg).map_err(|err| err.to_string())?;
 
         let ground_ours = converter
             .ground_msl_m(*lat_deg, *lon_deg)
             .map_err(|err| err.to_string())?;
-        let ground_gdal = query_gdal_bilinear(terrain_tile, *lat_deg, *lon_deg)?;
+        let ground_gdal = query_gdal_bilinear(tile_path, *lat_deg, *lon_deg)?;
         max_ground_err = max_ground_err.max((ground_ours - ground_gdal).abs());
 
         let geoid_ours = converter
@@ -229,7 +294,9 @@ fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
     }
 
     eprintln!(
-        "real terrain oracle max errors: ground={max_ground_err:.6}m geoid={max_geoid_err:.6}m msl_to_hae={max_height_err:.6}m"
+        "real terrain oracle max errors across {} regions / {} points: ground={max_ground_err:.6}m geoid={max_geoid_err:.6}m msl_to_hae={max_height_err:.6}m",
+        REGION_CASES.len(),
+        cases.len()
     );
 
     Ok(())

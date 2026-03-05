@@ -8,7 +8,8 @@ This document keeps deployment-focused details out of the top-level README.
 
 - PROJ `cct` for geodetic/topocentric/vertical transforms.
 - GDAL `gdallocationinfo` for terrain interpolation comparisons.
-- Mandatory real-terrain oracle checks using `data/srtm/N39W077.hgt` during oracle validation.
+- Mandatory real-terrain oracle checks using a checksum-pinned multi-region corpus:
+  - `N39W077`, `N35E139`, `N37E127`, `S33E151`, `S22W043`, `N51E000`, `N27E086`
 - Real-terrain tile integrity is checksum-pinned by `data/oracle_srtm_sha256.txt`.
 
 References:
@@ -23,6 +24,7 @@ References:
 | --- | --- | --- | --- | --- | --- |
 | `AGL/MSL/HAE` conversion matrix | PROJ `cct` + GDAL | Geoid: `us_nga_egm96_15.tif`, terrain: synthetic SRTM tile + crate `WW15MGH.DAC` | 864 conversions | `<= 0.05 m` | `0.004438 m` |
 | `lla_wgs84_from_height_m` altitude output | PROJ `cct` + GDAL | Same as above | 288 cases | `<= 0.05 m` | `0.004438 m` |
+| Real-terrain `ground_msl`, geoid, and `MSL -> HAE` | GDAL + PROJ | 7 pinned SRTM tiles (`data/srtm`) + crate `WW15MGH.DAC` | 28 points | `<= 0.05 m` | ground `0.000000 m`, geoid `0.003713 m`, msl->hae `0.003713 m` |
 | `LLA(HAE) -> NED` | PROJ `cct` topocentric | WGS84 | 288 cases | `<= 0.04 m/component` | `0.000000 m` |
 | `NED -> LLA(HAE)` | PROJ `cct` topocentric | WGS84 | 288 cases | horiz `<= 0.03 m`, vert `<= 0.03 m` | horiz `0.000000 m`, vert `0.000000 m` |
 | `ENU(origin A) -> NED(origin B)` | PROJ pipeline via absolute LLA | WGS84 | 192 cases | `<= 0.04 m/component` | `0.000000 m` |
@@ -37,19 +39,29 @@ References:
 - Performance smoke metrics are emitted as JSON (`target/perf_smoke_metrics.json`) and gated in CI.
 - Performance gate runs dataset-backed paths (EGM96 + `.hgt`) and tracks p95 latency.
 - FFI gate includes contention/scaling metrics for shared-handle vs per-thread-handle usage.
+- Perf harness reports peak RSS on Unix (`getrusage`) and Windows (`GetProcessMemoryInfo`).
 
-### Performance gate baseline (2026-03-04 local run)
+### Performance gate baseline (2026-03-05 local run)
 
 | Metric | Workload | CI threshold | Observed |
 | --- | --- | --- | --- |
-| `altitude_dataset` | `AGL -> HAE` with EGM96 bilinear + HGT bilinear | `>= 500,000 ops/s`, `p95 <= 5,000 ns` | `5,955,627 ops/s`, `p95 197.4 ns` |
-| `terrain_bilinear` | HGT bilinear interpolation | `>= 500,000 ops/s` | `6,709,314 ops/s` |
-| `wgs84_round_trip` | `NED -> LLA -> NED` | `>= 500,000 ops/s` | `6,692,134 ops/s` |
-| `ffi_single_thread` | `sw_converter_convert_height_m` 1-thread | `>= 250,000 ops/s`, `p95 <= 8,000 ns` | `4,617,946 ops/s`, `p95 278.7 ns` |
-| `ffi_shared_handle_8t` | 8 threads sharing one handle | `>= 200,000 ops/s` | `1,217,080 ops/s` |
-| `ffi_per_thread_handles_8t` | 8 threads, one handle per thread | `>= 500,000 ops/s` | `9,238,814 ops/s` |
-| `ffi_per_thread_scale_vs_ideal` | `ops_8t / (ops_1t * 8)` | `>= 0.20` | `0.2501` |
-| `max_rss_kb` | Process peak RSS | `<= 500,000 kB` | `62,320 kB` |
+| `altitude_dataset` | `AGL -> HAE` with EGM96 bilinear + HGT bilinear | `>= 500,000 ops/s`, `p95 <= 5,000 ns` | `6,091,112 ops/s`, `p95 178.7 ns` |
+| `terrain_bilinear` | HGT bilinear interpolation | `>= 500,000 ops/s` | `7,176,740 ops/s` |
+| `wgs84_round_trip` | `NED -> LLA -> NED` | `>= 500,000 ops/s` | `7,245,495 ops/s` |
+| `ffi_single_thread` | `sw_converter_convert_height_m` 1-thread | `>= 250,000 ops/s`, `p95 <= 8,000 ns` | `5,214,136 ops/s`, `p95 229.2 ns` |
+| `ffi_shared_handle_8t` | 8 threads sharing one handle | `>= 200,000 ops/s` | `1,963,810 ops/s` |
+| `ffi_per_thread_handles_8t` | 8 threads, one handle per thread | `>= 500,000 ops/s` | `11,054,257 ops/s` |
+| `ffi_per_thread_scale_vs_ideal` | `ops_8t / (ops_1t * 8)` | `>= 0.20` | `0.2650` |
+| `max_rss_kb` | Process peak RSS | `<= 500,000 kB` | `115,200 kB` |
+
+## Confidence statement
+
+- Absolute certainty is not possible for a global geospatial stack because upstream datasets, local terrain resolution, and interpolation behavior are approximations.
+- This project targets high confidence instead:
+  - explicit frame semantics (no implicit altitude-frame inference),
+  - independent differential oracle checks (PROJ + GDAL),
+  - deterministic pinned test datasets,
+  - regression/performance gates in CI.
 
 FFI usage recommendation:
 - Shared-handle mode is safe but serialized due to per-handle mutex.

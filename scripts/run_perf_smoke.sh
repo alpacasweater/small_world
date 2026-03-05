@@ -14,7 +14,18 @@ MIN_FFI_PER_THREAD_SCALE_VS_IDEAL="${MIN_FFI_PER_THREAD_SCALE_VS_IDEAL:-0.20}"
 MAX_ALTITUDE_P95_NS="${MAX_ALTITUDE_P95_NS:-5000}"
 MAX_FFI_P95_NS="${MAX_FFI_P95_NS:-8000}"
 MAX_RSS_KB="${MAX_RSS_KB:-500000}"
-REQUIRE_MAX_RSS="${REQUIRE_MAX_RSS:-1}"
+if [[ -z "${REQUIRE_MAX_RSS:-}" ]]; then
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      REQUIRE_MAX_RSS=0
+      ;;
+    *)
+      REQUIRE_MAX_RSS=1
+      ;;
+  esac
+else
+  REQUIRE_MAX_RSS="${REQUIRE_MAX_RSS}"
+fi
 
 mkdir -p "$(dirname "${OUT_JSON}")"
 

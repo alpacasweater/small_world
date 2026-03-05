@@ -19,6 +19,20 @@ Binary:
 /tmp/small_world_cpp_build/minimal_conversion
 ```
 
+`minimal_conversion` accepts dataset paths in either form:
+
+```bash
+/tmp/small_world_cpp_build/minimal_conversion /abs/path/WW15MGH.DAC /abs/path/srtm
+```
+
+or:
+
+```bash
+SMALL_WORLD_GEOID_PATH=/abs/path/WW15MGH.DAC \
+SMALL_WORLD_TERRAIN_ROOT=/abs/path/srtm \
+/tmp/small_world_cpp_build/minimal_conversion
+```
+
 Runtime smoke test (dataset-free, recommended for CI):
 
 ```bash

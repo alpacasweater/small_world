@@ -376,9 +376,60 @@ fn peak_rss_kb() -> Option<u64> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 fn peak_rss_kb() -> Option<u64> {
     None
+}
+
+#[cfg(windows)]
+fn peak_rss_kb() -> Option<u64> {
+    use std::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+
+    type Bool = i32;
+    type Dword = u32;
+    type Handle = *mut c_void;
+
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: Dword,
+        page_fault_count: Dword,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> Handle;
+    }
+
+    #[link(name = "psapi")]
+    unsafe extern "system" {
+        fn GetProcessMemoryInfo(
+            process: Handle,
+            counters: *mut ProcessMemoryCounters,
+            cb: Dword,
+        ) -> Bool;
+    }
+
+    let mut counters: ProcessMemoryCounters = unsafe { zeroed() };
+    counters.cb = size_of::<ProcessMemoryCounters>() as Dword;
+
+    let ok = unsafe {
+        // SAFETY: handles and pointers are valid for this process; `cb` matches struct size.
+        let handle = GetCurrentProcess();
+        GetProcessMemoryInfo(handle, &mut counters, counters.cb)
+    };
+    if ok == 0 {
+        return None;
+    }
+    Some((counters.peak_working_set_size as u64) / 1024)
 }
 
 fn json_string(

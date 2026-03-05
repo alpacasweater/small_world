@@ -11,7 +11,20 @@ static void require_ok(SwStatus status, const char* step) {
   }
 }
 
-int main() {
+int main(int argc, char** argv) {
+  const char* geoid_path = std::getenv("SMALL_WORLD_GEOID_PATH");
+  const char* terrain_root = std::getenv("SMALL_WORLD_TERRAIN_ROOT");
+  if (argc >= 3) {
+    geoid_path = argv[1];
+    terrain_root = argv[2];
+  }
+  if (geoid_path == nullptr || geoid_path[0] == '\0') {
+    geoid_path = "data/WW15MGH.DAC";
+  }
+  if (terrain_root == nullptr || terrain_root[0] == '\0') {
+    terrain_root = "data/srtm";
+  }
+
   SwConverterOptions opts{};
   require_ok(sw_converter_options_default(&opts), "sw_converter_options_default");
   opts.geoid_model = SW_GEOID_EGM96;
@@ -20,7 +33,7 @@ int main() {
   opts.preload_geoid = 1;
 
   SwConverterHandle* converter = nullptr;
-  require_ok(sw_converter_create("data/WW15MGH.DAC", "data/srtm", &opts, &converter),
+  require_ok(sw_converter_create(geoid_path, terrain_root, &opts, &converter),
              "sw_converter_create");
 
   // 1) Convert an MSL altitude to absolute HAE at this geodetic point.
