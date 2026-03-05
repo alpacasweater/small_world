@@ -18,7 +18,7 @@ fn command_exists(name: &str) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|status| status.success())
+        .map(|_| true)
         .unwrap_or(false)
 }
 
