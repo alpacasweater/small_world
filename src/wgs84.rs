@@ -2,6 +2,7 @@
 //!
 //! This module exposes explicit types for:
 //! - absolute geodetic coordinates: [`crate::wgs84::Lla`] (`lat/lon` degrees + `HAE` meters)
+//! - absolute Earth-Centered, Earth-Fixed coordinates: [`crate::wgs84::Ecef`] (`x/y/z` meters)
 //! - local North-East-Down coordinates: [`crate::wgs84::Ned`] (`d` positive down)
 //! - local East-North-Up coordinates: [`crate::wgs84::Enu`] (`u` positive up)
 
@@ -114,6 +115,83 @@ impl Lla {
     pub const fn alt_type(&self) -> AltType {
         self.alt_type
     }
+
+    /// Converts this geodetic point into absolute ECEF coordinates in meters.
+    pub fn to_ecef(self) -> Ecef {
+        let lat_rad = self.lat_deg().to_radians();
+        let lon_rad = self.lon_deg().to_radians();
+        let mut x_m = 0.0;
+        let mut y_m = 0.0;
+        let mut z_m = 0.0;
+        lla_to_ecef(
+            &lat_rad,
+            &lon_rad,
+            &self.alt_m(),
+            &mut x_m,
+            &mut y_m,
+            &mut z_m,
+        );
+        Ecef::new(x_m, y_m, z_m)
+    }
+
+    /// Converts absolute ECEF coordinates into geodetic LLA in WGS84/HAE.
+    pub fn from_ecef(point: Ecef) -> Self {
+        let mut lat_rad = 0.0;
+        let mut lon_rad = 0.0;
+        let mut alt_m = 0.0;
+        ecef_to_lla(
+            &point.x(),
+            &point.y(),
+            &point.z(),
+            &mut lat_rad,
+            &mut lon_rad,
+            &mut alt_m,
+        );
+        Self::new(
+            lat_rad.to_degrees(),
+            lon_rad.to_degrees(),
+            alt_m,
+            AltType::Wgs84,
+        )
+    }
+}
+
+/// Earth-Centered, Earth-Fixed point in meters on WGS84 axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ecef {
+    x_m: f64,
+    y_m: f64,
+    z_m: f64,
+}
+
+impl Ecef {
+    /// Creates an unchecked ECEF point in meters.
+    pub const fn new(x_m: f64, y_m: f64, z_m: f64) -> Self {
+        Self { x_m, y_m, z_m }
+    }
+
+    /// Creates a checked ECEF point in meters.
+    pub fn try_new(x_m: f64, y_m: f64, z_m: f64) -> Result<Self, Wgs84Error> {
+        validate_finite("x_m", x_m)?;
+        validate_finite("y_m", y_m)?;
+        validate_finite("z_m", z_m)?;
+        Ok(Self::new(x_m, y_m, z_m))
+    }
+
+    /// ECEF X component in meters.
+    pub const fn x(&self) -> f64 {
+        self.x_m
+    }
+
+    /// ECEF Y component in meters.
+    pub const fn y(&self) -> f64 {
+        self.y_m
+    }
+
+    /// ECEF Z component in meters.
+    pub const fn z(&self) -> f64 {
+        self.z_m
+    }
 }
 
 /// Local NED point in meters with explicit origin.
@@ -217,6 +295,48 @@ impl Ned {
         );
         Self::new(n_m, e_m, d_m, origin)
     }
+
+    /// Converts this local NED point into absolute ECEF coordinates in meters.
+    pub fn to_ecef(self) -> Ecef {
+        let lat0_rad = self.origin.lat_deg().to_radians();
+        let lon0_rad = self.origin.lon_deg().to_radians();
+        let mut x_m = 0.0;
+        let mut y_m = 0.0;
+        let mut z_m = 0.0;
+        ned_to_ecef(
+            &self.n(),
+            &self.e(),
+            &self.d(),
+            &lat0_rad,
+            &lon0_rad,
+            &self.origin.alt_m(),
+            &mut x_m,
+            &mut y_m,
+            &mut z_m,
+        );
+        Ecef::new(x_m, y_m, z_m)
+    }
+
+    /// Builds an NED point at `origin` from absolute ECEF coordinates.
+    pub fn from_ecef(point: Ecef, origin: Lla) -> Self {
+        let lat0_rad = origin.lat_deg().to_radians();
+        let lon0_rad = origin.lon_deg().to_radians();
+        let mut n_m = 0.0;
+        let mut e_m = 0.0;
+        let mut d_m = 0.0;
+        ecef_to_ned(
+            &point.x(),
+            &point.y(),
+            &point.z(),
+            &lat0_rad,
+            &lon0_rad,
+            &origin.alt_m(),
+            &mut n_m,
+            &mut e_m,
+            &mut d_m,
+        );
+        Self::new(n_m, e_m, d_m, origin)
+    }
 }
 
 /// Local ENU point in meters with explicit origin.
@@ -302,6 +422,48 @@ impl Enu {
     pub fn to_ned(self, ned_origin: Lla) -> Ned {
         Ned::from_lla(self.to_lla(), ned_origin)
     }
+
+    /// Converts this local ENU point into absolute ECEF coordinates in meters.
+    pub fn to_ecef(self) -> Ecef {
+        let lat0_rad = self.origin.lat_deg().to_radians();
+        let lon0_rad = self.origin.lon_deg().to_radians();
+        let mut x_m = 0.0;
+        let mut y_m = 0.0;
+        let mut z_m = 0.0;
+        enu_to_ecef(
+            &self.e(),
+            &self.n(),
+            &self.u(),
+            &lat0_rad,
+            &lon0_rad,
+            &self.origin.alt_m(),
+            &mut x_m,
+            &mut y_m,
+            &mut z_m,
+        );
+        Ecef::new(x_m, y_m, z_m)
+    }
+
+    /// Builds an ENU point at `origin` from absolute ECEF coordinates.
+    pub fn from_ecef(point: Ecef, origin: Lla) -> Self {
+        let lat0_rad = origin.lat_deg().to_radians();
+        let lon0_rad = origin.lon_deg().to_radians();
+        let mut e_m = 0.0;
+        let mut n_m = 0.0;
+        let mut u_m = 0.0;
+        ecef_to_enu(
+            &point.x(),
+            &point.y(),
+            &point.z(),
+            &lat0_rad,
+            &lon0_rad,
+            &origin.alt_m(),
+            &mut e_m,
+            &mut n_m,
+            &mut u_m,
+        );
+        Self::new(e_m, n_m, u_m, origin)
+    }
 }
 
 #[derive(Debug)]
@@ -352,6 +514,36 @@ pub fn ned_to_lla_wgs84(ned_point: Ned) -> Lla {
 /// Converts an absolute geodetic LLA point into local NED at `ned_origin`.
 pub fn lla_to_ned_wgs84(point: Lla, ned_origin: Lla) -> Ned {
     Ned::from_lla(point, ned_origin)
+}
+
+/// Converts a geodetic WGS84/HAE point into absolute ECEF coordinates.
+pub fn lla_to_ecef_wgs84(point: Lla) -> Ecef {
+    point.to_ecef()
+}
+
+/// Converts an absolute ECEF point into geodetic WGS84/HAE.
+pub fn ecef_to_lla_wgs84(point: Ecef) -> Lla {
+    Lla::from_ecef(point)
+}
+
+/// Converts a local NED point into absolute ECEF coordinates.
+pub fn ned_to_ecef_wgs84(point: Ned) -> Ecef {
+    point.to_ecef()
+}
+
+/// Converts an absolute ECEF point into local NED at `origin`.
+pub fn ecef_to_ned_wgs84(point: Ecef, origin: Lla) -> Ned {
+    Ned::from_ecef(point, origin)
+}
+
+/// Converts a local ENU point into absolute ECEF coordinates.
+pub fn enu_to_ecef_wgs84(point: Enu) -> Ecef {
+    point.to_ecef()
+}
+
+/// Converts an absolute ECEF point into local ENU at `origin`.
+pub fn ecef_to_enu_wgs84(point: Ecef, origin: Lla) -> Enu {
+    Enu::from_ecef(point, origin)
 }
 
 //=======================================================================================
@@ -611,9 +803,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        ecef_to_lla, ecef_to_ned, enu_to_lla, enu_to_ned_between_origins, euclidean_distance,
-        lla_to_ecef, lla_to_ned_wgs84, ned_to_ecef, ned_to_lla_wgs84, AltType, Enu, Lla, Ned,
-        Wgs84Error,
+        ecef_to_enu_wgs84, ecef_to_lla, ecef_to_lla_wgs84, ecef_to_ned, ecef_to_ned_wgs84,
+        enu_to_ecef_wgs84, enu_to_lla, enu_to_ned_between_origins, euclidean_distance, lla_to_ecef,
+        lla_to_ecef_wgs84, lla_to_ned_wgs84, ned_to_ecef, ned_to_ecef_wgs84, ned_to_lla_wgs84,
+        AltType, Ecef, Enu, Lla, Ned, Wgs84Error,
     };
 
     #[test]
@@ -720,6 +913,55 @@ mod tests {
         assert!((ned_back.d() - ned.d()).abs() < 1e-6);
     }
 
+    #[test]
+    fn public_lla_ecef_round_trip_is_consistent() {
+        let lla = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let ecef = lla_to_ecef_wgs84(lla);
+        let lla_back = ecef_to_lla_wgs84(ecef);
+
+        assert!((lla_back.lat_deg() - lla.lat_deg()).abs() < 1e-9);
+        assert!((lla_back.lon_deg() - lla.lon_deg()).abs() < 1e-9);
+        assert!((lla_back.alt_m() - lla.alt_m()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn public_ned_ecef_round_trip_is_consistent() {
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let ned = Ned::new(250.0, -120.0, 15.0, origin);
+
+        let ecef = ned_to_ecef_wgs84(ned);
+        let ned_back = ecef_to_ned_wgs84(ecef, origin);
+
+        assert!((ned_back.n() - ned.n()).abs() < 1e-6);
+        assert!((ned_back.e() - ned.e()).abs() < 1e-6);
+        assert!((ned_back.d() - ned.d()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn public_enu_ecef_round_trip_is_consistent() {
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let enu = Enu::new(250.0, -120.0, -15.0, origin);
+
+        let ecef = enu_to_ecef_wgs84(enu);
+        let enu_back = ecef_to_enu_wgs84(ecef, origin);
+
+        assert!((enu_back.e() - enu.e()).abs() < 1e-6);
+        assert!((enu_back.n() - enu.n()).abs() < 1e-6);
+        assert!((enu_back.u() - enu.u()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ecef_checked_constructor_validates_inputs() {
+        let valid = Ecef::try_new(1.0, 2.0, 3.0).unwrap();
+        assert_eq!(valid, Ecef::new(1.0, 2.0, 3.0));
+
+        let bad_x = Ecef::try_new(f64::NAN, 2.0, 3.0).unwrap_err();
+        assert!(matches!(
+            bad_x,
+            Wgs84Error::InvalidComponent { name: "x_m", .. }
+        ));
+    }
+
     proptest! {
         #[test]
         fn public_ned_lla_round_trip_randomized(
@@ -739,6 +981,23 @@ mod tests {
             prop_assert!((round_trip.n() - north_m).abs() < 1e-4);
             prop_assert!((round_trip.e() - east_m).abs() < 1e-4);
             prop_assert!((round_trip.d() - down_m).abs() < 1e-4);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn public_lla_ecef_round_trip_randomized(
+            lat_deg in -89.0f64..89.0,
+            lon_deg in -180.0f64..180.0,
+            hae_m in -200.0f64..12000.0,
+        ) {
+            let lla = Lla::new(lat_deg, lon_deg, hae_m, AltType::Wgs84);
+            let ecef = lla_to_ecef_wgs84(lla);
+            let lla_back = ecef_to_lla_wgs84(ecef);
+
+            prop_assert!((lla_back.lat_deg() - lat_deg).abs() < 1e-8);
+            prop_assert!((lla_back.lon_deg() - lon_deg).abs() < 1e-8);
+            prop_assert!((lla_back.alt_m() - hae_m).abs() < 2e-4);
         }
     }
 

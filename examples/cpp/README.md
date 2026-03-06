@@ -2,7 +2,7 @@
 
 This directory shows the recommended CMake integration path for `small_world`:
 - `CMakeLists.txt` uses `cmake/SmallWorldRust.cmake`
-- `minimal_conversion.cpp` exercises the C ABI (`include/small_world.h`)
+- `minimal_conversion.cpp` exercises the C ABI (`include/small_world.h`) including `AGL/MSL/HAE` and `ECEF`
 
 ## Build
 

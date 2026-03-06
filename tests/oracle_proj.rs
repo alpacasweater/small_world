@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use small_world::wgs84::{AltType, Enu, Lla, Ned};
+use small_world::wgs84::{AltType, Ecef, Enu, Lla, Ned};
 
 const EARTH_MEAN_RADIUS_M: f64 = 6_371_008.8;
 const ORIGIN_COUNT: usize = 36;
@@ -10,6 +10,7 @@ const ENU_NED_CASE_COUNT: usize = 24;
 const HORIZONTAL_TOLERANCE_M: f64 = 0.03;
 const VERTICAL_TOLERANCE_M: f64 = 0.03;
 const NED_COMPONENT_TOLERANCE_M: f64 = 0.04;
+const ECEF_COMPONENT_TOLERANCE_M: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug)]
 struct OracleLla {
@@ -169,6 +170,75 @@ fn cct_transform_rows(
     Ok(parsed)
 }
 
+fn cct_cart_transform_rows(
+    input_rows: &[[f64; 3]],
+    inverse: bool,
+) -> Result<Vec<[f64; 3]>, String> {
+    let mut cmd = Command::new("cct");
+    cmd.arg("-d").arg("12");
+    if inverse {
+        cmd.arg("-I");
+    }
+    cmd.arg("+proj=cart").arg("+ellps=WGS84");
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("failed to launch cct: {err}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "failed to open cct stdin".to_string())?;
+        for row in input_rows {
+            writeln!(stdin, "{:.15} {:.15} {:.15}", row[0], row[1], row[2])
+                .map_err(|err| format!("failed writing cct input: {err}"))?;
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("failed waiting for cct: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cct failed (status={}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut parsed = Vec::with_capacity(input_rows.len());
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let values: Vec<&str> = line.split_whitespace().collect();
+        if values.len() < 3 {
+            return Err(format!("unexpected cct output line: `{line}`"));
+        }
+        let x = values[0]
+            .parse::<f64>()
+            .map_err(|err| format!("failed parsing `{}` from cct: {err}", values[0]))?;
+        let y = values[1]
+            .parse::<f64>()
+            .map_err(|err| format!("failed parsing `{}` from cct: {err}", values[1]))?;
+        let z = values[2]
+            .parse::<f64>()
+            .map_err(|err| format!("failed parsing `{}` from cct: {err}", values[2]))?;
+        parsed.push([x, y, z]);
+    }
+
+    if parsed.len() != input_rows.len() {
+        return Err(format!(
+            "unexpected cct output row count: expected {}, got {}",
+            input_rows.len(),
+            parsed.len()
+        ));
+    }
+    Ok(parsed)
+}
+
 fn proj_lla_to_ned(origin: OracleLla, points: &[OracleLla]) -> Result<Vec<OracleNed>, String> {
     let mut rows = Vec::with_capacity(points.len());
     for point in points {
@@ -209,6 +279,36 @@ fn proj_enu_to_lla(origin: OracleLla, points: &[OracleEnu]) -> Result<Vec<Oracle
         rows.push([point.e_m, point.n_m, point.u_m]);
     }
     let lla_rows = cct_transform_rows(origin, &rows, true)?;
+    let mut lla = Vec::with_capacity(lla_rows.len());
+    for row in lla_rows {
+        lla.push(OracleLla {
+            lon_deg: row[0],
+            lat_deg: row[1],
+            hae_m: row[2],
+        });
+    }
+    Ok(lla)
+}
+
+fn proj_lla_to_ecef(points: &[OracleLla]) -> Result<Vec<Ecef>, String> {
+    let mut rows = Vec::with_capacity(points.len());
+    for point in points {
+        rows.push([point.lon_deg, point.lat_deg, point.hae_m]);
+    }
+    let ecef_rows = cct_cart_transform_rows(&rows, false)?;
+    let mut ecef = Vec::with_capacity(ecef_rows.len());
+    for row in ecef_rows {
+        ecef.push(Ecef::new(row[0], row[1], row[2]));
+    }
+    Ok(ecef)
+}
+
+fn proj_ecef_to_lla(points: &[Ecef]) -> Result<Vec<OracleLla>, String> {
+    let mut rows = Vec::with_capacity(points.len());
+    for point in points {
+        rows.push([point.x(), point.y(), point.z()]);
+    }
+    let lla_rows = cct_cart_transform_rows(&rows, true)?;
     let mut lla = Vec::with_capacity(lla_rows.len());
     for row in lla_rows {
         lla.push(OracleLla {
@@ -545,5 +645,107 @@ fn enu_to_ned_between_origins_matches_proj_oracle() -> Result<(), String> {
     }
 
     eprintln!("max ENU->NED component error vs PROJ oracle: {max_component_err:.6} m");
+    Ok(())
+}
+
+#[test]
+fn lla_to_ecef_matches_proj_oracle() -> Result<(), String> {
+    if skip_if_proj_unavailable() {
+        return Ok(());
+    }
+
+    let mut seed = 0xDEAD_BEEF_F00D_BAAD;
+    let mut max_component_err = 0.0_f64;
+
+    let mut points = Vec::with_capacity(ORIGIN_COUNT * POINTS_PER_ORIGIN);
+    for _ in 0..(ORIGIN_COUNT * POINTS_PER_ORIGIN) {
+        points.push(sample_origin(&mut seed));
+    }
+
+    let oracle_ecef = proj_lla_to_ecef(&points)?;
+    for (point, oracle) in points.into_iter().zip(oracle_ecef.into_iter()) {
+        let our = Lla::new(point.lat_deg, point.lon_deg, point.hae_m, AltType::Wgs84).to_ecef();
+        let component_err = (our.x() - oracle.x())
+            .abs()
+            .max((our.y() - oracle.y()).abs())
+            .max((our.z() - oracle.z()).abs());
+        max_component_err = max_component_err.max(component_err);
+        if component_err > ECEF_COMPONENT_TOLERANCE_M {
+            return Err(format!(
+                "ECEF mismatch above tolerance: err={component_err:.6} m \
+                 (our x/y/z={:.6}/{:.6}/{:.6}, oracle x/y/z={:.6}/{:.6}/{:.6}) \
+                 lla=({:.10},{:.10},{:.4})",
+                our.x(),
+                our.y(),
+                our.z(),
+                oracle.x(),
+                oracle.y(),
+                oracle.z(),
+                point.lat_deg,
+                point.lon_deg,
+                point.hae_m
+            ));
+        }
+    }
+
+    eprintln!("max LLA->ECEF component error vs PROJ oracle: {max_component_err:.6} m");
+    Ok(())
+}
+
+#[test]
+fn ecef_to_lla_matches_proj_oracle() -> Result<(), String> {
+    if skip_if_proj_unavailable() {
+        return Ok(());
+    }
+
+    let mut seed = 0x1234_5678_90AB_CDEF;
+    let mut max_horizontal_m = 0.0_f64;
+    let mut max_vertical_m = 0.0_f64;
+
+    let mut lla_points = Vec::with_capacity(ORIGIN_COUNT * POINTS_PER_ORIGIN);
+    for _ in 0..(ORIGIN_COUNT * POINTS_PER_ORIGIN) {
+        lla_points.push(sample_origin(&mut seed));
+    }
+    let ecef_points = proj_lla_to_ecef(&lla_points)?;
+    let oracle_lla = proj_ecef_to_lla(&ecef_points)?;
+
+    for (ecef, oracle) in ecef_points.into_iter().zip(oracle_lla.into_iter()) {
+        let our = Lla::from_ecef(ecef);
+        let our_lla = OracleLla {
+            lat_deg: our.lat_deg(),
+            lon_deg: normalize_lon_deg(our.lon_deg()),
+            hae_m: our.alt_m(),
+        };
+        let oracle_lla = OracleLla {
+            lat_deg: oracle.lat_deg,
+            lon_deg: normalize_lon_deg(oracle.lon_deg),
+            hae_m: oracle.hae_m,
+        };
+        let horizontal_m = lat_lon_to_horizontal_error_m(our_lla, oracle_lla);
+        let vertical_m = (our_lla.hae_m - oracle_lla.hae_m).abs();
+        max_horizontal_m = max_horizontal_m.max(horizontal_m);
+        max_vertical_m = max_vertical_m.max(vertical_m);
+
+        if horizontal_m > HORIZONTAL_TOLERANCE_M || vertical_m > VERTICAL_TOLERANCE_M {
+            return Err(format!(
+                "ECEF->LLA mismatch above tolerance: horizontal={horizontal_m:.6} m vertical={vertical_m:.6} m \
+                 (our lat/lon/hae={:.10}/{:.10}/{:.4}, oracle={:.10}/{:.10}/{:.4}) \
+                 ecef=({:.3},{:.3},{:.3})",
+                our_lla.lat_deg,
+                our_lla.lon_deg,
+                our_lla.hae_m,
+                oracle_lla.lat_deg,
+                oracle_lla.lon_deg,
+                oracle_lla.hae_m,
+                ecef.x(),
+                ecef.y(),
+                ecef.z()
+            ));
+        }
+    }
+
+    eprintln!(
+        "max ECEF->LLA error vs PROJ oracle: horizontal={max_horizontal_m:.6} m vertical={max_vertical_m:.6} m"
+    );
     Ok(())
 }

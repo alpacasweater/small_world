@@ -50,6 +50,16 @@ int main() {
   require_near(point_back.lon_deg, point.lon_deg, "point_back.lon_deg");
   require_near(point_back.hae_m, point.hae_m, "point_back.hae_m");
 
+  // LLA <-> ECEF round-trip should be stable.
+  SwEcef point_ecef{};
+  require_ok(sw_wgs84_lla_to_ecef(point, &point_ecef), "sw_wgs84_lla_to_ecef");
+
+  SwLlaWgs84 point_back_from_ecef{};
+  require_ok(sw_wgs84_ecef_to_lla(point_ecef, &point_back_from_ecef), "sw_wgs84_ecef_to_lla");
+  require_near(point_back_from_ecef.lat_deg, point.lat_deg, "point_back_from_ecef.lat_deg");
+  require_near(point_back_from_ecef.lon_deg, point.lon_deg, "point_back_from_ecef.lon_deg");
+  require_near(point_back_from_ecef.hae_m, point.hae_m, "point_back_from_ecef.hae_m");
+
   std::cout << "C++ runtime smoke passed.\n";
   return 0;
 }

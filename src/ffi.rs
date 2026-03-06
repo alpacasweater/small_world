@@ -10,7 +10,7 @@ use crate::altitude::{AltitudeConverter, AltitudeError, GeoPoint, GeoidProvider,
 use crate::egm96::{EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, VoidPolicy};
-use crate::wgs84::{AltType, Enu, Lla, Ned};
+use crate::wgs84::{AltType, Ecef, Enu, Lla, Ned};
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -125,6 +125,36 @@ fn sw_from_lla(value: Lla) -> SwLlaWgs84 {
         lat_deg: value.lat_deg(),
         lon_deg: value.lon_deg(),
         hae_m: value.alt_m(),
+    }
+}
+
+fn ecef_from_sw(value: SwEcef) -> Result<Ecef, SwStatus> {
+    if !value.x_m.is_finite() {
+        return Err(fail(
+            SwStatus::InvalidArgument,
+            &format!("x_m must be finite, got {}", value.x_m),
+        ));
+    }
+    if !value.y_m.is_finite() {
+        return Err(fail(
+            SwStatus::InvalidArgument,
+            &format!("y_m must be finite, got {}", value.y_m),
+        ));
+    }
+    if !value.z_m.is_finite() {
+        return Err(fail(
+            SwStatus::InvalidArgument,
+            &format!("z_m must be finite, got {}", value.z_m),
+        ));
+    }
+    Ok(Ecef::new(value.x_m, value.y_m, value.z_m))
+}
+
+fn sw_from_ecef(value: Ecef) -> SwEcef {
+    SwEcef {
+        x_m: value.x(),
+        y_m: value.y(),
+        z_m: value.z(),
     }
 }
 
@@ -261,6 +291,15 @@ pub struct SwLlaWgs84 {
     pub lat_deg: f64,
     pub lon_deg: f64,
     pub hae_m: f64,
+}
+
+/// Absolute ECEF point in meters on WGS84 axes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SwEcef {
+    pub x_m: f64,
+    pub y_m: f64,
+    pub z_m: f64,
 }
 
 /// Local NED point in meters.
@@ -609,6 +648,104 @@ pub unsafe extern "C" fn sw_converter_lla_wgs84_from_height_m(
     SwStatus::Ok
 }
 
+/// Converts a geodetic point plus explicit source frame altitude into absolute WGS84 ECEF.
+///
+/// # Safety
+/// - `converter` must be a valid handle from `sw_converter_create`.
+/// - `out_ecef` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_converter_ecef_wgs84_from_height_m(
+    converter: *const SwConverterHandle,
+    lat_deg: f64,
+    lon_deg: f64,
+    meters: f64,
+    source_frame: SwVerticalFrame,
+    out_ecef: *mut SwEcef,
+) -> SwStatus {
+    if converter.is_null() {
+        return fail(SwStatus::NullPointer, "converter must be non-null");
+    }
+    if out_ecef.is_null() {
+        return fail(SwStatus::NullPointer, "out_ecef must be non-null");
+    }
+    clear_last_error();
+
+    let source_frame = match to_vertical_frame(source_frame) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let point = match point_from_components(lat_deg, lon_deg) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+
+    // SAFETY: null checked above.
+    let handle = unsafe { &*converter };
+    let core = match handle.core.lock() {
+        Ok(lock) => lock,
+        Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
+    };
+    let converter = core.altitude_converter();
+    let point_ecef_wgs84 = match converter.ecef_wgs84_from_height_m(point, meters, source_frame) {
+        Ok(value) => value,
+        Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),
+    };
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_ecef = sw_from_ecef(point_ecef_wgs84);
+    }
+    SwStatus::Ok
+}
+
+/// Converts an absolute WGS84 ECEF point into a scalar altitude for an explicit target frame.
+///
+/// # Safety
+/// - `converter` must be a valid handle from `sw_converter_create`.
+/// - `out_meters` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_converter_height_from_ecef_wgs84_m(
+    converter: *const SwConverterHandle,
+    point_ecef_wgs84: SwEcef,
+    target_frame: SwVerticalFrame,
+    out_meters: *mut f64,
+) -> SwStatus {
+    if converter.is_null() {
+        return fail(SwStatus::NullPointer, "converter must be non-null");
+    }
+    if out_meters.is_null() {
+        return fail(SwStatus::NullPointer, "out_meters must be non-null");
+    }
+    clear_last_error();
+
+    let point_ecef_wgs84 = match ecef_from_sw(point_ecef_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let target_frame = match to_vertical_frame(target_frame) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+
+    // SAFETY: null checked above.
+    let handle = unsafe { &*converter };
+    let core = match handle.core.lock() {
+        Ok(lock) => lock,
+        Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
+    };
+    let converter = core.altitude_converter();
+    let meters = match converter.height_from_ecef_wgs84_m(point_ecef_wgs84, target_frame) {
+        Ok(value) => value,
+        Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),
+    };
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_meters = meters;
+    }
+    SwStatus::Ok
+}
+
 /// Returns terrain cache usage counters for a converter handle.
 ///
 /// # Safety
@@ -710,6 +847,124 @@ pub unsafe extern "C" fn sw_wgs84_lla_to_ned(
     SwStatus::Ok
 }
 
+/// Converts a WGS84/HAE geodetic point to absolute ECEF coordinates.
+///
+/// # Safety
+/// `out_ecef` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_lla_to_ecef(
+    point_lla_wgs84: SwLlaWgs84,
+    out_ecef: *mut SwEcef,
+) -> SwStatus {
+    if out_ecef.is_null() {
+        return fail(SwStatus::NullPointer, "out_ecef must be non-null");
+    }
+    clear_last_error();
+
+    let point = match lla_from_sw(point_lla_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ecef = point.to_ecef();
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_ecef = sw_from_ecef(ecef);
+    }
+    SwStatus::Ok
+}
+
+/// Converts an absolute ECEF point to geodetic WGS84/HAE.
+///
+/// # Safety
+/// `out_lla` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_ecef_to_lla(
+    point_ecef_wgs84: SwEcef,
+    out_lla: *mut SwLlaWgs84,
+) -> SwStatus {
+    if out_lla.is_null() {
+        return fail(SwStatus::NullPointer, "out_lla must be non-null");
+    }
+    clear_last_error();
+
+    let point_ecef_wgs84 = match ecef_from_sw(point_ecef_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let lla = Lla::from_ecef(point_ecef_wgs84);
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_lla = sw_from_lla(lla);
+    }
+    SwStatus::Ok
+}
+
+/// Converts a local NED point to absolute ECEF coordinates.
+///
+/// # Safety
+/// `out_ecef` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_ned_to_ecef(
+    origin_lla_wgs84: SwLlaWgs84,
+    point_ned_m: SwNed,
+    out_ecef: *mut SwEcef,
+) -> SwStatus {
+    if out_ecef.is_null() {
+        return fail(SwStatus::NullPointer, "out_ecef must be non-null");
+    }
+    clear_last_error();
+
+    let origin = match lla_from_sw(origin_lla_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ecef = Ned::new(point_ned_m.n_m, point_ned_m.e_m, point_ned_m.d_m, origin).to_ecef();
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_ecef = sw_from_ecef(ecef);
+    }
+    SwStatus::Ok
+}
+
+/// Converts an absolute ECEF point to local NED at `origin_lla_wgs84`.
+///
+/// # Safety
+/// `out_ned` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_ecef_to_ned(
+    point_ecef_wgs84: SwEcef,
+    origin_lla_wgs84: SwLlaWgs84,
+    out_ned: *mut SwNed,
+) -> SwStatus {
+    if out_ned.is_null() {
+        return fail(SwStatus::NullPointer, "out_ned must be non-null");
+    }
+    clear_last_error();
+
+    let point_ecef_wgs84 = match ecef_from_sw(point_ecef_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let origin = match lla_from_sw(origin_lla_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ned = Ned::from_ecef(point_ecef_wgs84, origin);
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_ned = SwNed {
+            n_m: ned.n(),
+            e_m: ned.e(),
+            d_m: ned.d(),
+        };
+    }
+    SwStatus::Ok
+}
+
 /// Converts an ENU point at one WGS84/HAE origin into NED at another WGS84/HAE origin.
 ///
 /// # Safety
@@ -788,6 +1043,76 @@ pub unsafe extern "C" fn sw_wgs84_enu_to_lla(
     SwStatus::Ok
 }
 
+/// Converts a local ENU point to absolute ECEF coordinates.
+///
+/// # Safety
+/// `out_ecef` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_enu_to_ecef(
+    point_enu_m: SwEnu,
+    enu_origin_lla_wgs84: SwLlaWgs84,
+    out_ecef: *mut SwEcef,
+) -> SwStatus {
+    if out_ecef.is_null() {
+        return fail(SwStatus::NullPointer, "out_ecef must be non-null");
+    }
+    clear_last_error();
+
+    let enu_origin = match lla_from_sw(enu_origin_lla_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ecef = Enu::new(
+        point_enu_m.e_m,
+        point_enu_m.n_m,
+        point_enu_m.u_m,
+        enu_origin,
+    )
+    .to_ecef();
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_ecef = sw_from_ecef(ecef);
+    }
+    SwStatus::Ok
+}
+
+/// Converts an absolute ECEF point to local ENU at `enu_origin_lla_wgs84`.
+///
+/// # Safety
+/// `out_enu` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn sw_wgs84_ecef_to_enu(
+    point_ecef_wgs84: SwEcef,
+    enu_origin_lla_wgs84: SwLlaWgs84,
+    out_enu: *mut SwEnu,
+) -> SwStatus {
+    if out_enu.is_null() {
+        return fail(SwStatus::NullPointer, "out_enu must be non-null");
+    }
+    clear_last_error();
+
+    let point_ecef_wgs84 = match ecef_from_sw(point_ecef_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let enu_origin = match lla_from_sw(enu_origin_lla_wgs84) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let enu = Enu::from_ecef(point_ecef_wgs84, enu_origin);
+
+    // SAFETY: null checked above.
+    unsafe {
+        *out_enu = SwEnu {
+            e_m: enu.e(),
+            n_m: enu.n(),
+            u_m: enu.u(),
+        };
+    }
+    SwStatus::Ok
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{CStr, CString};
@@ -798,11 +1123,13 @@ mod tests {
 
     use super::{
         sw_converter_convert_height_m, sw_converter_create, sw_converter_destroy,
+        sw_converter_ecef_wgs84_from_height_m, sw_converter_height_from_ecef_wgs84_m,
         sw_converter_lla_wgs84_from_height_m, sw_converter_options_default, sw_converter_reference,
-        sw_converter_terrain_cache_stats, sw_last_error_message,
-        sw_wgs84_enu_to_ned_between_origins, SwConverterHandle, SwConverterOptions, SwEnu,
-        SwGeoidModel, SwInterpolation, SwLlaWgs84, SwNed, SwStatus, SwTerrainReference,
-        SwVerticalFrame,
+        sw_converter_terrain_cache_stats, sw_last_error_message, sw_wgs84_ecef_to_enu,
+        sw_wgs84_ecef_to_lla, sw_wgs84_ecef_to_ned, sw_wgs84_enu_to_ecef,
+        sw_wgs84_enu_to_ned_between_origins, sw_wgs84_lla_to_ecef, sw_wgs84_ned_to_ecef,
+        SwConverterHandle, SwConverterOptions, SwEcef, SwEnu, SwGeoidModel, SwInterpolation,
+        SwLlaWgs84, SwNed, SwStatus, SwTerrainReference, SwVerticalFrame,
     };
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -956,6 +1283,146 @@ mod tests {
     }
 
     #[test]
+    fn ffi_height_conversion_and_ecef_helpers_are_consistent() {
+        let dir = unique_temp_dir("ecef_helpers");
+        // SAFETY: test inputs satisfy all API contracts.
+        unsafe {
+            let handle = make_converter(&dir);
+
+            let mut point_ecef = SwEcef {
+                x_m: 0.0,
+                y_m: 0.0,
+                z_m: 0.0,
+            };
+            let status = sw_converter_ecef_wgs84_from_height_m(
+                handle,
+                0.25,
+                0.25,
+                50.0,
+                SwVerticalFrame::Agl,
+                &mut point_ecef,
+            );
+            assert_eq!(status, SwStatus::Ok);
+
+            let mut agl_m = 0.0;
+            let status = sw_converter_height_from_ecef_wgs84_m(
+                handle,
+                point_ecef,
+                SwVerticalFrame::Agl,
+                &mut agl_m,
+            );
+            assert_eq!(status, SwStatus::Ok);
+            assert!((agl_m - 50.0).abs() < 1e-6);
+
+            let mut msl_m = 0.0;
+            let status = sw_converter_height_from_ecef_wgs84_m(
+                handle,
+                point_ecef,
+                SwVerticalFrame::Msl,
+                &mut msl_m,
+            );
+            assert_eq!(status, SwStatus::Ok);
+            assert!((msl_m - 170.0).abs() < 1e-6);
+
+            let mut hae_m = 0.0;
+            let status = sw_converter_height_from_ecef_wgs84_m(
+                handle,
+                point_ecef,
+                SwVerticalFrame::Hae,
+                &mut hae_m,
+            );
+            assert_eq!(status, SwStatus::Ok);
+            assert!((hae_m - 200.0).abs() < 1e-6);
+
+            sw_converter_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn ffi_wgs84_ecef_transforms_round_trip() {
+        // SAFETY: test inputs satisfy all API contracts.
+        unsafe {
+            let origin = SwLlaWgs84 {
+                lat_deg: 39.0,
+                lon_deg: -77.0,
+                hae_m: 150.0,
+            };
+            let point = SwLlaWgs84 {
+                lat_deg: 39.0002,
+                lon_deg: -77.0003,
+                hae_m: 172.0,
+            };
+
+            let mut point_ecef = SwEcef {
+                x_m: 0.0,
+                y_m: 0.0,
+                z_m: 0.0,
+            };
+            let status = sw_wgs84_lla_to_ecef(point, &mut point_ecef);
+            assert_eq!(status, SwStatus::Ok);
+
+            let mut point_back = SwLlaWgs84 {
+                lat_deg: 0.0,
+                lon_deg: 0.0,
+                hae_m: 0.0,
+            };
+            let status = sw_wgs84_ecef_to_lla(point_ecef, &mut point_back);
+            assert_eq!(status, SwStatus::Ok);
+            assert!((point_back.lat_deg - point.lat_deg).abs() < 1e-9);
+            assert!((point_back.lon_deg - point.lon_deg).abs() < 1e-9);
+            assert!((point_back.hae_m - point.hae_m).abs() < 1e-4);
+
+            let ned = SwNed {
+                n_m: 20.0,
+                e_m: -8.0,
+                d_m: 3.0,
+            };
+            let mut ned_ecef = SwEcef {
+                x_m: 0.0,
+                y_m: 0.0,
+                z_m: 0.0,
+            };
+            let status = sw_wgs84_ned_to_ecef(origin, ned, &mut ned_ecef);
+            assert_eq!(status, SwStatus::Ok);
+
+            let mut ned_back = SwNed {
+                n_m: 0.0,
+                e_m: 0.0,
+                d_m: 0.0,
+            };
+            let status = sw_wgs84_ecef_to_ned(ned_ecef, origin, &mut ned_back);
+            assert_eq!(status, SwStatus::Ok);
+            assert!((ned_back.n_m - ned.n_m).abs() < 1e-6);
+            assert!((ned_back.e_m - ned.e_m).abs() < 1e-6);
+            assert!((ned_back.d_m - ned.d_m).abs() < 1e-6);
+
+            let enu = SwEnu {
+                e_m: 20.0,
+                n_m: -8.0,
+                u_m: -3.0,
+            };
+            let mut enu_ecef = SwEcef {
+                x_m: 0.0,
+                y_m: 0.0,
+                z_m: 0.0,
+            };
+            let status = sw_wgs84_enu_to_ecef(enu, origin, &mut enu_ecef);
+            assert_eq!(status, SwStatus::Ok);
+
+            let mut enu_back = SwEnu {
+                e_m: 0.0,
+                n_m: 0.0,
+                u_m: 0.0,
+            };
+            let status = sw_wgs84_ecef_to_enu(enu_ecef, origin, &mut enu_back);
+            assert_eq!(status, SwStatus::Ok);
+            assert!((enu_back.e_m - enu.e_m).abs() < 1e-6);
+            assert!((enu_back.n_m - enu.n_m).abs() < 1e-6);
+            assert!((enu_back.u_m - enu.u_m).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn ffi_reports_invalid_arguments_via_status_and_last_error() {
         let dir = unique_temp_dir("errors");
         // SAFETY: test inputs satisfy all API contracts except deliberate invalid coordinate.
@@ -977,6 +1444,23 @@ mod tests {
             assert!(!message_ptr.is_null());
             let message = CStr::from_ptr(message_ptr).to_string_lossy().to_string();
             assert!(message.contains("lat_deg"));
+
+            let mut out = 0.0;
+            let status = sw_converter_height_from_ecef_wgs84_m(
+                handle,
+                SwEcef {
+                    x_m: f64::NAN,
+                    y_m: 0.0,
+                    z_m: 0.0,
+                },
+                SwVerticalFrame::Msl,
+                &mut out,
+            );
+            assert_eq!(status, SwStatus::InvalidArgument);
+            let message_ptr = sw_last_error_message();
+            assert!(!message_ptr.is_null());
+            let message = CStr::from_ptr(message_ptr).to_string_lossy().to_string();
+            assert!(message.contains("x_m"));
 
             sw_converter_destroy(handle);
         }

@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 use crate::egm96::{EgmError, EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, TerrainError};
-use crate::wgs84::{AltType, Lla};
+use crate::wgs84::{AltType, Ecef, Lla};
 
 /// Vertical reference frame for altitude values in this crate.
 ///
@@ -343,6 +343,50 @@ where
             hae.meters,
             AltType::Wgs84,
         ))
+    }
+
+    /// Converts a height sample at `point` into absolute WGS84 ECEF coordinates in meters.
+    pub fn ecef_wgs84_from_height_m(
+        &self,
+        point: GeoPoint,
+        meters: f64,
+        source_frame: VerticalFrame,
+    ) -> Result<Ecef, AltitudeError> {
+        let lla = self.lla_wgs84_from_height_m(point, meters, source_frame)?;
+        Ok(lla.to_ecef())
+    }
+
+    /// Typed variant of [`Self::ecef_wgs84_from_height_m`] using an [`AltitudeSample`].
+    pub fn ecef_wgs84_from_sample(
+        &self,
+        point: GeoPoint,
+        sample: AltitudeSample,
+    ) -> Result<Ecef, AltitudeError> {
+        let lla = self.lla_wgs84_from_sample(point, sample)?;
+        Ok(lla.to_ecef())
+    }
+
+    /// Converts an absolute WGS84 ECEF point into a scalar height in the explicit target frame.
+    ///
+    /// The ECEF point is interpreted as a WGS84 absolute position and converted via `HAE`.
+    pub fn height_from_ecef_wgs84_m(
+        &self,
+        point_ecef_wgs84: Ecef,
+        target_frame: VerticalFrame,
+    ) -> Result<f64, AltitudeError> {
+        let lla = Lla::from_ecef(point_ecef_wgs84);
+        let point = GeoPoint::new(lla.lat_deg(), lla.lon_deg())?;
+        self.convert_height_m(point, lla.alt_m(), VerticalFrame::Hae, target_frame)
+    }
+
+    /// Typed variant of [`Self::height_from_ecef_wgs84_m`] returning an [`AltitudeSample`].
+    pub fn sample_from_ecef_wgs84(
+        &self,
+        point_ecef_wgs84: Ecef,
+        target_frame: VerticalFrame,
+    ) -> Result<AltitudeSample, AltitudeError> {
+        let meters = self.height_from_ecef_wgs84_m(point_ecef_wgs84, target_frame)?;
+        AltitudeSample::new(meters, target_frame)
     }
 
     /// Converts orthometric `MSL` meters into WGS84 ellipsoidal `HAE` meters.
@@ -687,6 +731,88 @@ mod tests {
     }
 
     #[test]
+    fn ecef_wgs84_from_height_matches_lla_helper() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let from_lla = converter
+            .lla_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
+            .unwrap()
+            .to_ecef();
+        let from_ecef = converter
+            .ecef_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
+            .unwrap();
+
+        assert!((from_lla.x() - from_ecef.x()).abs() < 1e-9);
+        assert!((from_lla.y() - from_ecef.y()).abs() < 1e-9);
+        assert!((from_lla.z() - from_ecef.z()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ecef_typed_helpers_are_consistent_with_scalar_variants() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+        let sample = AltitudeSample::agl_m(50.0).unwrap();
+
+        let from_scalar = converter
+            .ecef_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
+            .unwrap();
+        let from_sample = converter.ecef_wgs84_from_sample(point, sample).unwrap();
+
+        assert!((from_scalar.x() - from_sample.x()).abs() < 1e-9);
+        assert!((from_scalar.y() - from_sample.y()).abs() < 1e-9);
+        assert!((from_scalar.z() - from_sample.z()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ecef_to_frame_height_round_trip_is_consistent() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        for frame in frames {
+            let source_m = 250.0;
+            let point_ecef = converter
+                .ecef_wgs84_from_height_m(point, source_m, frame)
+                .unwrap();
+            let recovered = converter
+                .height_from_ecef_wgs84_m(point_ecef, frame)
+                .unwrap();
+            assert!(
+                (recovered - source_m).abs() < 1e-9,
+                "frame={frame:?} recovered={recovered} source={source_m}"
+            );
+        }
+    }
+
+    #[test]
+    fn sample_from_ecef_wgs84_sets_explicit_target_frame() {
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let point_ecef = converter
+            .ecef_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
+            .unwrap();
+        let sample = converter
+            .sample_from_ecef_wgs84(point_ecef, VerticalFrame::Msl)
+            .unwrap();
+        let expected_msl = converter
+            .convert_height_m(point, 50.0, VerticalFrame::Agl, VerticalFrame::Msl)
+            .unwrap();
+
+        assert_eq!(sample.frame, VerticalFrame::Msl);
+        assert!((sample.meters - expected_msl).abs() < 1e-9);
+    }
+
+    #[test]
     fn same_frame_conversion_is_strict_identity_and_query_free() {
         let geoid = MockGeoid::new(30.0);
         let terrain = MockTerrain::new(120.0);
@@ -937,6 +1063,38 @@ mod tests {
 
             prop_assert_eq!(back.frame, source_frame);
             prop_assert!((back.meters - value_m).abs() < 1e-9);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn ecef_round_trip_holds_for_all_vertical_frames(
+            lat in -89.0f64..89.0,
+            lon in -720.0f64..720.0,
+            geoid_offset_m in -120.0f64..120.0,
+            ground_msl_m in -500.0f64..9000.0,
+            value_m in -2000.0f64..50000.0,
+            frame_idx in 0u8..3,
+        ) {
+            let geoid = MockGeoid::new(geoid_offset_m);
+            let terrain = MockTerrain::new(ground_msl_m);
+            let converter = AltitudeConverter::new(&geoid, &terrain);
+            let point = GeoPoint::new(lat, lon).unwrap();
+
+            let frame = match frame_idx {
+                0 => VerticalFrame::Agl,
+                1 => VerticalFrame::Msl,
+                _ => VerticalFrame::Hae,
+            };
+
+            let point_ecef = converter
+                .ecef_wgs84_from_height_m(point, value_m, frame)
+                .unwrap();
+            let round_trip = converter
+                .height_from_ecef_wgs84_m(point_ecef, frame)
+                .unwrap();
+
+            prop_assert!((round_trip - value_m).abs() < 2e-4);
         }
     }
 }

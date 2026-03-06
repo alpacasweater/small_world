@@ -61,6 +61,12 @@ typedef struct SwLlaWgs84 {
   double hae_m;
 } SwLlaWgs84;
 
+typedef struct SwEcef {
+  double x_m;
+  double y_m;
+  double z_m;
+} SwEcef;
+
 typedef struct SwNed {
   double n_m;
   double e_m;
@@ -101,6 +107,16 @@ SwStatus sw_converter_lla_wgs84_from_height_m(const SwConverterHandle* converter
                                               double meters,
                                               SwVerticalFrame source_frame,
                                               SwLlaWgs84* out_lla);
+SwStatus sw_converter_ecef_wgs84_from_height_m(const SwConverterHandle* converter,
+                                               double lat_deg,
+                                               double lon_deg,
+                                               double meters,
+                                               SwVerticalFrame source_frame,
+                                               SwEcef* out_ecef);
+SwStatus sw_converter_height_from_ecef_wgs84_m(const SwConverterHandle* converter,
+                                               SwEcef point_ecef_wgs84,
+                                               SwVerticalFrame target_frame,
+                                               double* out_meters);
 SwStatus sw_converter_terrain_cache_stats(const SwConverterHandle* converter,
                                           uint64_t* out_cached_tiles,
                                           uint64_t* out_loaded_tiles);
@@ -111,6 +127,14 @@ SwStatus sw_wgs84_ned_to_lla(SwLlaWgs84 origin_lla_wgs84,
 SwStatus sw_wgs84_lla_to_ned(SwLlaWgs84 point_lla_wgs84,
                              SwLlaWgs84 origin_lla_wgs84,
                              SwNed* out_ned);
+SwStatus sw_wgs84_lla_to_ecef(SwLlaWgs84 point_lla_wgs84, SwEcef* out_ecef);
+SwStatus sw_wgs84_ecef_to_lla(SwEcef point_ecef_wgs84, SwLlaWgs84* out_lla);
+SwStatus sw_wgs84_ned_to_ecef(SwLlaWgs84 origin_lla_wgs84,
+                              SwNed point_ned_m,
+                              SwEcef* out_ecef);
+SwStatus sw_wgs84_ecef_to_ned(SwEcef point_ecef_wgs84,
+                              SwLlaWgs84 origin_lla_wgs84,
+                              SwNed* out_ned);
 SwStatus sw_wgs84_enu_to_ned_between_origins(SwEnu point_enu_m,
                                              SwLlaWgs84 enu_origin_lla_wgs84,
                                              SwLlaWgs84 ned_origin_lla_wgs84,
@@ -118,6 +142,12 @@ SwStatus sw_wgs84_enu_to_ned_between_origins(SwEnu point_enu_m,
 SwStatus sw_wgs84_enu_to_lla(SwEnu point_enu_m,
                              SwLlaWgs84 enu_origin_lla_wgs84,
                              SwLlaWgs84* out_lla);
+SwStatus sw_wgs84_enu_to_ecef(SwEnu point_enu_m,
+                              SwLlaWgs84 enu_origin_lla_wgs84,
+                              SwEcef* out_ecef);
+SwStatus sw_wgs84_ecef_to_enu(SwEcef point_ecef_wgs84,
+                              SwLlaWgs84 enu_origin_lla_wgs84,
+                              SwEnu* out_enu);
 
 #ifdef __cplusplus
 }  // extern "C"

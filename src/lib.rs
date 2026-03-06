@@ -2,7 +2,7 @@
 //!
 //! The public API is organized around two primary workflows:
 //! - altitude reference conversion (`AGL`/`MSL`/`HAE`) via [`altitude::AltitudeConverter`]
-//! - local/global frame conversion (`LLA`/`NED`/`ENU`) via [`wgs84`]
+//! - local/global frame conversion (`LLA`/`ECEF`/`NED`/`ENU`) via [`wgs84`]
 //!
 //! # Frame contract
 //! - `AGL`: meters above local terrain surface.
@@ -46,6 +46,9 @@
 //! assert!((ned_at_same_origin.n() - 5.0).abs() < 1e-6);
 //! assert!((ned_at_same_origin.e() - 10.0).abs() < 1e-6);
 //! assert!((ned_at_same_origin.d() + 2.0).abs() < 1e-6);
+//! let ecef = origin.to_ecef();
+//! let origin_back = Lla::from_ecef(ecef);
+//! assert!((origin_back.alt_m() - origin.alt_m()).abs() < 1e-4);
 //! ```
 //!
 //! See `Readme.md` for quick-start usage and `docs/PRODUCTION.md` for validation/deployment details.
@@ -62,5 +65,5 @@ pub mod height;
 pub mod interpolate;
 /// SRTM terrain dataset loading, interpolation, and cache policy.
 pub mod terrain;
-/// WGS84 local/global frame transforms (`LLA`/`NED`/`ENU`).
+/// WGS84 local/global frame transforms (`LLA`/`ECEF`/`NED`/`ENU`).
 pub mod wgs84;

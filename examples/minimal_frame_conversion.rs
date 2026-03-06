@@ -40,5 +40,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         target_lla_hae_wgs84.alt_m()
     );
 
+    // EXAMPLE 3: altitude sample with explicit frame -> absolute ECEF, then back to MSL.
+    let point = GeoPoint::new(39.0000, -77.0000)?;
+    let point_ecef = c96.ecef_wgs84_from_height_m(point, 110.0, VerticalFrame::Msl)?;
+    let recovered_msl_m = c96.height_from_ecef_wgs84_m(point_ecef, VerticalFrame::Msl)?;
+    println!(
+        "MSL->ECEF->MSL: x={:.3}, y={:.3}, z={:.3}, msl_m={:.3}",
+        point_ecef.x(),
+        point_ecef.y(),
+        point_ecef.z(),
+        recovered_msl_m
+    );
+
     Ok(())
 }

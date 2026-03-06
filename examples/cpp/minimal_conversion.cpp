@@ -55,6 +55,18 @@ int main(int argc, char** argv) {
 
   std::cout << "ENU->NED: n=" << ned.n_m << ", e=" << ned.e_m << ", d=" << ned.d_m << "\n";
 
+  // 3) Convert explicit-frame altitude to ECEF, then recover MSL from that ECEF point.
+  SwEcef point_ecef{};
+  require_ok(sw_converter_ecef_wgs84_from_height_m(converter, 39.0000, -77.0000, 110.0,
+                                                   SW_FRAME_MSL, &point_ecef),
+             "sw_converter_ecef_wgs84_from_height_m");
+  double recovered_msl_m = 0.0;
+  require_ok(sw_converter_height_from_ecef_wgs84_m(converter, point_ecef, SW_FRAME_MSL,
+                                                   &recovered_msl_m),
+             "sw_converter_height_from_ecef_wgs84_m");
+  std::cout << "MSL->ECEF->MSL: x=" << point_ecef.x_m << ", y=" << point_ecef.y_m
+            << ", z=" << point_ecef.z_m << ", msl_m=" << recovered_msl_m << "\n";
+
   sw_converter_destroy(converter);
   return 0;
 }

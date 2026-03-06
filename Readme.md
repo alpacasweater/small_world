@@ -31,6 +31,10 @@ Local Cartesian conventions:
 - `NED`: `d` is positive down.
 - `ENU`: `u` is positive up.
 
+Global absolute frames:
+- `LLA`: geodetic latitude/longitude degrees plus WGS84 `HAE` meters.
+- `ECEF`: Earth-Centered, Earth-Fixed Cartesian meters on WGS84 axes.
+
 ## Quick start
 
 1. Download geoid datasets (NGA):
@@ -67,6 +71,7 @@ let converter = AltitudeConverter::new(&geoid, &terrain);
 
 let p = GeoPoint::new(39.0, -77.0)?;
 let alt_hae_m = converter.convert_height_m(p, 120.0, VerticalFrame::Agl, VerticalFrame::Hae)?;
+let p_ecef = converter.ecef_wgs84_from_height_m(p, 120.0, VerticalFrame::Agl)?;
 ```
 
 ## Core APIs
@@ -76,10 +81,16 @@ Altitude conversion API (converter-first):
 - `convert_sample(point, sample, target_frame)`
 - `lla_wgs84_from_height_m(point, meters, from)`
 - `lla_wgs84_from_sample(point, sample)`
+- `ecef_wgs84_from_height_m(point, meters, from)`
+- `ecef_wgs84_from_sample(point, sample)`
+- `height_from_ecef_wgs84_m(point_ecef_wgs84, target_frame)`
+- `sample_from_ecef_wgs84(point_ecef_wgs84, target_frame)`
 
 Local/global transforms:
-- `Lla`, `Ned`, `Enu` types with friendly accessors (`.n()`, `.e()`, `.d()`, `.u()`).
-- `Ned::to_lla`, `Ned::from_lla`, `Enu::to_lla`, `Enu::to_ned`.
+- `Lla`, `Ecef`, `Ned`, `Enu` types with friendly accessors.
+- `Lla::to_ecef`, `Lla::from_ecef`
+- `Ned::to_lla`, `Ned::from_lla`, `Ned::to_ecef`, `Ned::from_ecef`
+- `Enu::to_lla`, `Enu::to_ned`, `Enu::to_ecef`, `Enu::from_ecef`
 
 ## Validation and trust
 

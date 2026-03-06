@@ -17,6 +17,10 @@ Primary API surface:
 - `AltitudeConverter::convert_sample(sample, to)`
 - `AltitudeConverter::lla_wgs84_from_height_m(point, height_m, from)`
 - `AltitudeConverter::lla_wgs84_from_sample(sample)`
+- `AltitudeConverter::ecef_wgs84_from_height_m(point, height_m, from)`
+- `AltitudeConverter::ecef_wgs84_from_sample(point, sample)`
+- `AltitudeConverter::height_from_ecef_wgs84_m(point_ecef_wgs84, to)`
+- `AltitudeConverter::sample_from_ecef_wgs84(point_ecef_wgs84, to)`
 
 Rationale:
 - Most human-readable callsites
@@ -33,12 +37,16 @@ Do not reintroduce without explicit design review:
 ### 3) Use explicit local/global structs
 In `src/wgs84.rs`, preserve explicit type names and field names:
 - `Lla { lat_deg, lon_deg, alt_m, alt_type }`
+- `Ecef { x_m, y_m, z_m }`
 - `Ned { n, e, d, origin }`
 - `Enu { e, n, u, origin }`
 
 Expected primary methods:
+- `Lla::to_ecef()`, `Lla::from_ecef(...)`
 - `Ned::new(...)`, `Ned::to_lla()`, `Ned::from_lla(...)`
+- `Ned::to_ecef()`, `Ned::from_ecef(...)`
 - `Enu::new(...)`, `Enu::to_lla()`, `Enu::to_ned(...)`
+- `Enu::to_ecef()`, `Enu::from_ecef(...)`
 
 Compatibility helpers (keep while needed by existing callsites):
 - `enu_to_ned_between_origins(...)`
@@ -49,6 +57,7 @@ Compatibility helpers (keep while needed by existing callsites):
 - `AGL`: meters above local terrain.
 - `MSL`: orthometric height above mean sea level (geoid-referenced).
 - `HAE`: ellipsoidal height above WGS84 ellipsoid.
+- `ECEF`: Earth-Centered, Earth-Fixed Cartesian meters on WGS84 axes.
 - `NED`: `d` is positive down.
 - `ENU`: `u` is positive up.
 
@@ -78,12 +87,13 @@ Git policy:
 - C ABI keeps frame semantics explicit:
   - `SwVerticalFrame`: `AGL`, `MSL`, `HAE`
   - `SwLlaWgs84.hae_m`: always WGS84 ellipsoidal altitude
+  - `SwEcef`: always WGS84 Cartesian meters (`x_m`, `y_m`, `z_m`)
 - Opaque handle `SwConverterHandle` owns geoid/terrain state for efficient repeated queries.
 - Do not add implicit frame conversion APIs to C ABI without explicit design review.
 
 ## Code Map
 - `src/altitude.rs`: frame conversion logic, converter entry points, altitude sample handling
-- `src/wgs84.rs`: LLA/NED/ENU types and transforms
+- `src/wgs84.rs`: LLA/ECEF/NED/ENU types and transforms
 - `src/terrain.rs`: HGT tile loading, interpolation, void policy, caching
 - `src/egm96.rs`: geoid grid readers and interpolation
 - `src/height.rs`: interpolation options and height wrappers
@@ -113,6 +123,7 @@ Git policy:
 `examples/minimal_frame_conversion.rs` should demonstrate, in minimal readable code:
 1. ENU point with EGM2008-MSL origin -> NED point with EGM96-MSL origin
 2. NED point with AGL origin -> LLA point in WGS84/HAE
+3. Explicit frame altitude -> WGS84/ECEF -> target vertical frame round trip
 
 If this example gets longer or less readable, refactor API/helpers before adding complexity.
 
