@@ -5,12 +5,23 @@
 ## Why teams use it
 
 - Explicit altitude frames (`AGL`, `MSL`, `HAE`) with no implicit guessing.
-- Explicit local frames (`NED`, `ENU`, `LLA`) with readable structs and accessors.
+- Explicit local/global frames (`NED`, `ENU`, `LLA`, `ECEF`) with readable types and accessors.
 - Lightweight runtime footprint (`byteorder` only).
 - Differentially validated against trusted geospatial tools (PROJ + GDAL).
 - C ABI and modern CMake support for C++ deployment.
+- Python bindings via PyO3 + Maturin for rapid prototyping and robotics scripting.
+
+## Prerequisites
+
+| Language | Requirement |
+|---|---|
+| Rust | stable toolchain (`rustup update stable`) |
+| Python | Python ≥ 3.9 + `pip install maturin` |
+| C/C++ | Rust toolchain only — no GDAL/PROJ needed to build |
 
 ## Add to your project
+
+**Rust:**
 
 ```toml
 [dependencies]
@@ -18,6 +29,19 @@ small_world = { path = "../small_world" }
 # or:
 # small_world = { git = "https://github.com/Swarm-Command/small_world.git", branch = "main" }
 ```
+
+**Python** — build and install from source:
+
+```bash
+pip install maturin
+cd python && maturin develop --release
+```
+
+```python
+from small_world import Lla, Ecef, Ned, Enu, AltitudeConverter, VerticalFrame
+```
+
+See [`python/README.md`](python/README.md) for full Python setup, data configuration, and API reference.
 
 ## Frame contract
 
@@ -37,28 +61,33 @@ Global absolute frames:
 
 ## Quick start
 
-1. Download geoid datasets (NGA):
+> Frame-only conversions (`Lla`, `Ecef`, `Ned`, `Enu`) need **no data files**.
+> Altitude conversion (`AGL`/`MSL`/`HAE`) requires a geoid file and SRTM tiles.
+
+**Step 1 — data setup** (skip if you only need frame transforms):
 
 ```bash
-./scripts/download_geoid_data.sh --model all
-```
+# Geoid (~2 MB, goes to data/WW15MGH.DAC)
+./scripts/download_geoid_data.sh --model egm96
 
-2. Download SRTM `.hgt` tiles for your area (5 GiB cap by default):
-
-```bash
+# SRTM tiles for your area of interest
 ./scripts/download_hgt_tiles.sh \
   --lat-min 38.5 --lat-max 39.5 \
   --lon-min -77.6 --lon-max -76.2 \
   --out-dir data/srtm
 ```
 
-3. Run the minimal example:
+**Step 2 — run a minimal example:**
 
 ```bash
+# Rust
 cargo run --example minimal_frame_conversion
+
+# Python (after: pip install maturin && cd python && maturin develop --release)
+python examples/minimal_frame_conversion.py
 ```
 
-4. Convert altitude frames in code:
+**Step 3 — altitude conversion in code:**
 
 ```rust
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
@@ -86,8 +115,20 @@ Altitude conversion API (converter-first):
 - `height_from_ecef_wgs84_m(point_ecef_wgs84, target_frame)`
 - `sample_from_ecef_wgs84(point_ecef_wgs84, target_frame)`
 
+Pairwise altitude helpers (all take `(lat_deg, lon_deg, meters) -> meters`):
+- `hae_from_msl`, `msl_from_hae`
+- `msl_from_agl`, `agl_from_msl`
+- `hae_from_agl`, `agl_from_hae`
+
+Reference access:
+- `geoid_offset_m(lat_deg, lon_deg)` — geoid separation N in meters
+- `ground_msl_m(lat_deg, lon_deg)` — terrain MSL elevation
+- `reference(lat_deg, lon_deg)` → `TerrainReference { geoid_offset_m, ground_msl_m, ground_hae_m }`
+
 Local/global transforms:
 - `Lla`, `Ecef`, `Ned`, `Enu` types with friendly accessors.
+- Checked constructors: `Lla::try_new`, `Ecef::try_new`, `Ned::try_new`, `Enu::try_new`
+- Unchecked `new(...)` constructors still exist for low-level/const-style use and do not validate inputs.
 - `Lla::to_ecef`, `Lla::from_ecef`
 - `Ned::to_lla`, `Ned::from_lla`, `Ned::to_ecef`, `Ned::from_ecef`
 - `Enu::to_lla`, `Enu::to_ned`, `Enu::to_ecef`, `Enu::from_ecef`
@@ -115,14 +156,51 @@ Performance is also gated in CI with dataset-backed workloads:
 - Throughput + p95 latency metrics for altitude, terrain, and WGS84 transforms
 - FFI contention/scaling metrics (`1-thread`, `8-thread shared-handle`, `8-thread per-thread handles`)
 
-C++ concurrency guidance:
+## C/C++
+
+C ABI surface (from `include/small_world.h`):
+
+| Group | Functions |
+|---|---|
+| Lifecycle | `sw_converter_options_default`, `sw_converter_create`, `sw_converter_destroy`, `sw_last_error_message` |
+| Altitude → scalar | `sw_converter_convert_height_m`, `sw_converter_reference` |
+| Altitude → LLA | `sw_converter_lla_wgs84_from_height_m` |
+| Altitude → ECEF | `sw_converter_ecef_wgs84_from_height_m`, `sw_converter_height_from_ecef_wgs84_m` |
+| Diagnostics | `sw_converter_terrain_cache_stats` |
+| LLA ↔ NED | `sw_wgs84_ned_to_lla`, `sw_wgs84_lla_to_ned` |
+| LLA ↔ ECEF | `sw_wgs84_lla_to_ecef`, `sw_wgs84_ecef_to_lla` |
+| NED ↔ ECEF | `sw_wgs84_ned_to_ecef`, `sw_wgs84_ecef_to_ned` |
+| ENU ↔ LLA/NED/ECEF | `sw_wgs84_enu_to_lla`, `sw_wgs84_enu_to_ned_between_origins`, `sw_wgs84_enu_to_ecef`, `sw_wgs84_ecef_to_enu` |
+
+Concurrency:
 - Shared converter handles are thread-safe but serialize on an internal mutex.
 - For high throughput, use one converter handle per thread.
+
+See `examples/cpp/README.md` for a full CMake integration walkthrough.
+
+## Python
+
+```python
+from small_world import Lla, Ecef, Enu, AltitudeConverter, VerticalFrame
+
+# Frame conversions — no data files needed
+origin = Lla(39.0, -77.0, 150.0)
+ecef   = origin.to_ecef()
+enu    = Enu(10.0, 5.0, 2.0, origin)
+ned    = enu.to_ned(origin)            # n=5, e=10, d=-2
+
+# Altitude conversion — requires data files
+converter = AltitudeConverter("data/WW15MGH.DAC", "data/srtm")
+hae_m = converter.convert_height_m(39.0, -77.0, 120.0, VerticalFrame.Agl, VerticalFrame.Hae)
+```
+
+Full setup guide, API reference, env vars, and examples: [`python/README.md`](python/README.md)
 
 ## More docs
 
 - Production and validation details: [`docs/PRODUCTION.md`](docs/PRODUCTION.md)
+- Python bindings: [`python/`](python/) — PyO3 source, type stubs, tests, examples
 - C++ and CMake integration walkthrough: [`examples/cpp/README.md`](examples/cpp/README.md)
-- Canonical compact example: [`examples/minimal_frame_conversion.rs`](examples/minimal_frame_conversion.rs)
+- Canonical compact Rust example: [`examples/minimal_frame_conversion.rs`](examples/minimal_frame_conversion.rs)
 - Performance gate runner: [`scripts/run_perf_smoke.sh`](scripts/run_perf_smoke.sh)
 - C ABI/header sync checker: [`scripts/verify_c_header_sync.sh`](scripts/verify_c_header_sync.sh)

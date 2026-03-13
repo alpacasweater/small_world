@@ -40,7 +40,7 @@
 //! ```rust
 //! use small_world::wgs84::{AltType, Enu, Lla, Ned};
 //!
-//! let origin = Lla::new(39.0, -77.0, 150.0, AltType::Wgs84);
+//! let origin = Lla::try_new(39.0, -77.0, 150.0, AltType::Wgs84).unwrap();
 //! let enu = Enu::new(10.0, 5.0, 2.0, origin);
 //! let ned_at_same_origin: Ned = enu.to_ned(origin);
 //! assert!((ned_at_same_origin.n() - 5.0).abs() < 1e-6);
@@ -50,6 +50,9 @@
 //! let origin_back = Lla::from_ecef(ecef);
 //! assert!((origin_back.alt_m() - origin.alt_m()).abs() < 1e-4);
 //! ```
+//!
+//! Use `try_new` constructors when validating external input. The `new` constructors in
+//! [`wgs84`] remain available as unchecked building blocks.
 //!
 //! See `Readme.md` for quick-start usage and `docs/PRODUCTION.md` for validation/deployment details.
 

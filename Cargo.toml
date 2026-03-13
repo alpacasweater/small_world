@@ -1,3 +1,12 @@
+[workspace]
+members = [".", "python"]
+resolver = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [package]
 name = "small_world"
 version = "0.1.0"

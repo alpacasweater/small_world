@@ -14,9 +14,9 @@ Use this file to restore context quickly, preserve API decisions, and keep frame
 ### 1) Altitude API choice is locked to converter-first API
 Primary API surface:
 - `AltitudeConverter::convert_height_m(point, height_m, from, to)`
-- `AltitudeConverter::convert_sample(sample, to)`
+- `AltitudeConverter::convert_sample(point, sample, to)`
 - `AltitudeConverter::lla_wgs84_from_height_m(point, height_m, from)`
-- `AltitudeConverter::lla_wgs84_from_sample(sample)`
+- `AltitudeConverter::lla_wgs84_from_sample(point, sample)`
 - `AltitudeConverter::ecef_wgs84_from_height_m(point, height_m, from)`
 - `AltitudeConverter::ecef_wgs84_from_sample(point, sample)`
 - `AltitudeConverter::height_from_ecef_wgs84_m(point_ecef_wgs84, to)`
@@ -35,17 +35,20 @@ Do not reintroduce without explicit design review:
 - `examples/minimal_api_ergonomics.rs`
 
 ### 3) Use explicit local/global structs
-In `src/wgs84.rs`, preserve explicit type names and field names:
-- `Lla { lat_deg, lon_deg, alt_m, alt_type }`
-- `Ecef { x_m, y_m, z_m }`
-- `Ned { n, e, d, origin }`
-- `Enu { e, n, u, origin }`
+In `src/wgs84.rs`, preserve explicit type names and accessor names:
+- `Lla` with `lat_deg()`, `lon_deg()`, `alt_m()`, `alt_type()`
+- `Ecef` with `x()`, `y()`, `z()`
+- `Ned` with `n()`, `e()`, `d()`, `origin()`
+- `Enu` with `e()`, `n()`, `u()`, `origin()`
 
 Expected primary methods:
 - `Lla::to_ecef()`, `Lla::from_ecef(...)`
+- `Lla::try_new(...)` for checked construction; `Lla::new(...)` is unchecked
 - `Ned::new(...)`, `Ned::to_lla()`, `Ned::from_lla(...)`
+- `Ned::try_new(...)` for checked construction
 - `Ned::to_ecef()`, `Ned::from_ecef(...)`
 - `Enu::new(...)`, `Enu::to_lla()`, `Enu::to_ned(...)`
+- `Enu::try_new(...)` for checked construction
 - `Enu::to_ecef()`, `Enu::from_ecef(...)`
 
 Compatibility helpers (keep while needed by existing callsites):
@@ -88,8 +91,21 @@ Git policy:
   - `SwVerticalFrame`: `AGL`, `MSL`, `HAE`
   - `SwLlaWgs84.hae_m`: always WGS84 ellipsoidal altitude
   - `SwEcef`: always WGS84 Cartesian meters (`x_m`, `y_m`, `z_m`)
+  - `SwNed`: `n_m`, `e_m`, `d_m` (d positive down)
+  - `SwEnu`: `e_m`, `n_m`, `u_m` (u positive up)
 - Opaque handle `SwConverterHandle` owns geoid/terrain state for efficient repeated queries.
 - Do not add implicit frame conversion APIs to C ABI without explicit design review.
+
+Current public `sw_*` functions (authoritative: `include/small_world.h`):
+- Lifecycle: `sw_converter_options_default`, `sw_converter_create`, `sw_converter_destroy`, `sw_last_error_message`
+- Altitude→scalar: `sw_converter_convert_height_m`, `sw_converter_reference`
+- Altitude→LLA: `sw_converter_lla_wgs84_from_height_m`
+- Altitude↔ECEF: `sw_converter_ecef_wgs84_from_height_m`, `sw_converter_height_from_ecef_wgs84_m`
+- Diagnostics: `sw_converter_terrain_cache_stats`
+- LLA↔NED: `sw_wgs84_ned_to_lla`, `sw_wgs84_lla_to_ned`
+- LLA↔ECEF: `sw_wgs84_lla_to_ecef`, `sw_wgs84_ecef_to_lla`
+- NED↔ECEF: `sw_wgs84_ned_to_ecef`, `sw_wgs84_ecef_to_ned`
+- ENU↔*: `sw_wgs84_enu_to_lla`, `sw_wgs84_enu_to_ned_between_origins`, `sw_wgs84_enu_to_ecef`, `sw_wgs84_ecef_to_enu`
 
 ## Code Map
 - `src/altitude.rs`: frame conversion logic, converter entry points, altitude sample handling
@@ -110,6 +126,18 @@ Git policy:
 - `scripts/download_hgt_tiles.sh`: bbox-based SRTM `.hgt` downloader with size cap (default 5 GiB)
 - `scripts/run_oracle_validation.sh`: local/CI oracle validation entrypoint
 - `Readme.md`: user docs and conversion matrices
+
+### Python bindings (`python/`)
+- `python/Cargo.toml`: `small_world_py` crate — PyO3 extension (`_small_world.cdylib`)
+- `python/pyproject.toml`: Maturin build config, pytest settings
+- `python/src/lib.rs`: all PyO3 `#[pyclass]`/`#[pymethods]` bindings; `OwnedGeoid` enum for lifetime-free `AltitudeConverter` ownership
+- `python/small_world/__init__.py`: re-exports from the compiled extension
+- `python/small_world/_small_world.pyi`: PEP 561 type stubs for all public classes
+- `python/tests/conftest.py`: data-availability fixtures and skip markers
+- `python/tests/test_wgs84.py`: WGS84 frame conversion tests (no data files required)
+- `python/tests/test_altitude.py`: altitude converter and geoid tests (skipped when data absent)
+- `python/examples/minimal_frame_conversion.py`: LLA/ECEF/ENU/NED demo
+- `python/examples/altitude_conversion.py`: AGL→MSL→HAE CLI demo
 
 ## CI Topology
 - `stable-checks` (Ubuntu): full gates including oracle + perf + docs.
@@ -186,6 +214,46 @@ Before declaring production-ready:
 - Prefer methods that spell intent:
   - `convert_height_m(..., from, to)` over implicit `convert(...)`
 
+## jcodemunch — Mandatory Code Intelligence Tool
+
+**All agents working in this repo must use jcodemunch before reading files directly.**
+jcodemunch is indexed at `local/small_world-ba36cdc8`. Using it saves significant tokens (~$0.25–$0.40/session vs. reading raw files).
+
+### Workflow rules
+
+1. **Re-index first** (incremental — fast):
+   ```
+   mcp__jcodemunch__index_folder(path="<repo_root>", incremental=true)
+   ```
+   Do this at the start of every session and after making file changes.
+
+2. **Look up symbols before reading files.** Use these tools in order of preference:
+   - `search_symbols(query, repo)` — find functions/types by name or concept
+   - `get_file_outline(repo, file_path)` — get all symbols in a file with signatures
+   - `get_symbol(repo, symbol_id)` — fetch a single symbol's full body
+   - Only fall back to `Read` when you need complete file context (e.g., test file bodies, config files with no symbols)
+
+3. **Never read an entire source file to find a function.** Use `search_symbols` instead.
+
+4. **Keep the index current.** After adding, renaming, or deleting files run `index_folder` again with `incremental=true`.
+
+### Quick reference
+
+| Task | Tool |
+|---|---|
+| Find where `convert_height_m` is defined | `search_symbols(query="convert_height_m")` |
+| List all symbols in `src/altitude.rs` | `get_file_outline(file_path="src/altitude.rs")` |
+| See the full body of a specific function | `get_symbol(symbol_id=<id from outline>)` |
+| Explore the full repo structure | `get_repo_outline(repo="local/small_world-ba36cdc8")` |
+| Find all callers of a function | `find_references(symbol_id=...)` |
+
+### Current index state (2026-03-12)
+- Repo ID: `local/small_world-ba36cdc8`
+- Symbols: 681 (Rust × 21 files, Python × 5 files, C/C++ × 3 files, Bash × 9, Python scripts × 1)
+- Re-indexing takes < 1 second (incremental)
+
+---
+
 ## Resume Steps for the Next Agent
 1. Check repo state: `git status -sb`.
 2. Confirm docs and examples are converter-first only.
@@ -194,5 +262,18 @@ Before declaring production-ready:
 5. If API changes are required, update:
    - tests
    - `examples/minimal_frame_conversion.rs`
+   - `python/src/lib.rs` (Python bindings)
+   - `python/small_world/_small_world.pyi` (type stubs)
    - `Readme.md`
    in the same commit.
+
+### Python bindings quality gate
+After any change to Rust sources, rebuild and re-test Python bindings:
+
+```bash
+cd python
+maturin develop
+pytest
+```
+
+Verify that WGS84 round-trip tests pass without data files, and altitude tests skip gracefully when data is absent.

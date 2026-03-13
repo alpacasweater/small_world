@@ -76,6 +76,58 @@ Guardrail:
 ./scripts/check_runtime_dependencies.sh
 ```
 
+## Python bindings
+
+The `python/` directory contains a PyO3 extension module (`small_world._small_world`) built with Maturin.
+
+### Building
+
+```bash
+pip install maturin
+cd python
+maturin develop --release        # editable install (dev workflow)
+maturin build --release          # produce a wheel
+```
+
+### Running the Python test suite
+
+```bash
+cd python
+# Point at your data files if available:
+export SMALL_WORLD_EGM96=../data/WW15MGH.DAC
+export SMALL_WORLD_SRTM=../data/srtm
+pytest
+```
+
+Tests that require data files are automatically skipped when the files are absent.
+
+### Python API surface
+
+| Python class / enum | Rust source |
+|---|---|
+| `Lla`, `Ecef`, `Ned`, `Enu` | `src/wgs84.rs` |
+| `EGM96`, `EGM2008` | `src/egm96.rs` |
+| `SrtmDataset`, `VoidPolicy` | `src/terrain.rs` |
+| `AltitudeConverter`, `TerrainReference` | `src/altitude.rs` |
+| `VerticalFrame`, `Interpolation`, `GeoidModel` | enums |
+
+All errors surface as `ValueError` with the same messages as the Rust `Display` impls.
+
+Type stubs are provided at `python/small_world/_small_world.pyi` (PEP 561 compliant).
+
+### Python dependencies
+
+- `maturin >= 1.5` (build only)
+- `pytest` (test only)
+- No runtime Python dependencies beyond the compiled extension.
+
+### Limitations
+
+- `AltitudeConverter.set_void_policy()` rebuilds the terrain dataset (cache is cleared).
+- The builder-pattern (`with_geoid_interpolation`) is replaced by mutating setters (`set_geoid_interpolation`).
+- `EGM96` / `EGM2008` lazy-load tile data on first query; call `.load_data()` to pre-load for consistent latency.
+- `Ned.from_ecef()` is not exposed in Python. Use `Enu.from_ecef(point, origin).to_ned(origin)` instead.
+
 ## C/C++ integration
 
 Artifacts and headers:
@@ -94,6 +146,23 @@ Modern CMake helper:
 - Link target: `small_world::small_world`
 
 See full integration example: `examples/cpp/README.md`
+
+### C ABI function reference
+
+| Group | Functions |
+|---|---|
+| Lifecycle | `sw_converter_options_default`, `sw_converter_create`, `sw_converter_destroy`, `sw_last_error_message` |
+| Altitude → scalar | `sw_converter_convert_height_m`, `sw_converter_reference` |
+| Altitude → LLA | `sw_converter_lla_wgs84_from_height_m` |
+| Altitude → ECEF | `sw_converter_ecef_wgs84_from_height_m` |
+| ECEF → altitude | `sw_converter_height_from_ecef_wgs84_m` |
+| Diagnostics | `sw_converter_terrain_cache_stats` |
+| LLA ↔ NED | `sw_wgs84_ned_to_lla`, `sw_wgs84_lla_to_ned` |
+| LLA ↔ ECEF | `sw_wgs84_lla_to_ecef`, `sw_wgs84_ecef_to_lla` |
+| NED ↔ ECEF | `sw_wgs84_ned_to_ecef`, `sw_wgs84_ecef_to_ned` |
+| ENU ↔ LLA/NED/ECEF | `sw_wgs84_enu_to_lla`, `sw_wgs84_enu_to_ned_between_origins`, `sw_wgs84_enu_to_ecef`, `sw_wgs84_ecef_to_enu` |
+
+The authoritative source is `include/small_world.h`.
 
 ### ABI compatibility policy
 
@@ -137,6 +206,7 @@ Optional nightly validation (not required by end users):
 - Never mix `MSL` and `HAE` arithmetic without explicit conversion.
 - In this crate, SRTM `.hgt` elevations are terrain `MSL`.
 - `NED.d` is down; `ENU.u` is up.
+- For `wgs84` types, prefer `try_new` when accepting external input. `new` constructors are intentionally unchecked.
 
 ## Dataset integrity options
 
