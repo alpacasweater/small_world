@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io::{self, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
@@ -122,7 +122,9 @@ impl From<io::Error> for EgmError {
 
 #[derive(Debug)]
 pub struct EgmGrid {
-    data_file: RefCell<File>,
+    // `None` once the grid has been fully materialized in memory (e.g. via `from_bytes`); in
+    // that mode `read_geoid_value` never touches the filesystem.
+    data_file: Option<RefCell<File>>,
     geoid: Vec<f64>,
     model: EgmModel,
     format: GridFormat,
@@ -142,8 +144,39 @@ impl EgmGrid {
         let lon_step_deg = 360.0 / lon_bins as f64;
 
         Ok(Self {
-            data_file: RefCell::new(file),
+            data_file: Some(RefCell::new(file)),
             geoid: Vec::new(),
+            model,
+            format,
+            rows,
+            cols_storage,
+            lon_bins,
+            lat_step_deg,
+            lon_step_deg,
+        })
+    }
+
+    /// Builds a fully in-memory geoid grid from raw dataset bytes (the same byte layout as the
+    /// on-disk `.DAC`/`.dat` files). Useful for embedding the grid via `include_bytes!` so no
+    /// runtime file path is required (e.g. wasm, or worker threads that cannot share a file
+    /// handle). The returned grid holds no file handle and answers every query from memory.
+    pub fn from_bytes(bytes: &[u8], model: EgmModel) -> Result<Self, EgmError> {
+        let (rows, cols_storage, lon_bins, format) =
+            dimensions_from_file_size(model, bytes.len() as u64)?;
+        let lat_step_deg = 180.0 / (rows as f64 - 1.0);
+        let lon_step_deg = 360.0 / lon_bins as f64;
+
+        let geoid = read_grid_values(
+            &mut io::Cursor::new(bytes),
+            format,
+            rows,
+            cols_storage,
+            lon_bins,
+        )?;
+
+        Ok(Self {
+            data_file: None,
+            geoid,
             model,
             format,
             rows,
@@ -175,47 +208,22 @@ impl EgmGrid {
     }
 
     pub fn load_data(&mut self) -> Result<(), EgmError> {
-        let mut file = self.data_file.borrow_mut();
+        let Some(data_file) = self.data_file.as_ref() else {
+            // No file handle means the grid was built fully in memory already.
+            return Ok(());
+        };
+        let mut file = data_file.borrow_mut();
         file.seek(SeekFrom::Start(0))?;
 
-        let mut geoid = vec![0.0_f64; self.rows * self.lon_bins];
-        match self.format {
-            GridFormat::Egm96I16Be => {
-                for row in 0..self.rows {
-                    for col in 0..self.lon_bins {
-                        let raw = file.read_i16::<BigEndian>()?;
-                        geoid[self.index(row, col)] = raw as f64 / 100.0;
-                    }
-                }
-            }
-            GridFormat::Egm2008F32LeFortranSequential => {
-                let expected_record_bytes = (self.lon_bins * 4) as u32;
-                for row in 0..self.rows {
-                    let leading_record_bytes = file.read_u32::<LittleEndian>()?;
-                    if leading_record_bytes != expected_record_bytes {
-                        return Err(EgmError::InvalidGridSize {
-                            model: self.model,
-                            expected_bytes: self.rows * (self.lon_bins * 4 + 8),
-                            actual_bytes: self.rows as u64 * leading_record_bytes as u64,
-                        });
-                    }
+        let geoid = read_grid_values(
+            &mut *file,
+            self.format,
+            self.rows,
+            self.cols_storage,
+            self.lon_bins,
+        )?;
 
-                    for col in 0..self.lon_bins {
-                        geoid[self.index(row, col)] = file.read_f32::<LittleEndian>()? as f64;
-                    }
-
-                    let trailing_record_bytes = file.read_u32::<LittleEndian>()?;
-                    if trailing_record_bytes != expected_record_bytes {
-                        return Err(EgmError::InvalidGridSize {
-                            model: self.model,
-                            expected_bytes: self.rows * (self.lon_bins * 4 + 8),
-                            actual_bytes: self.rows as u64 * trailing_record_bytes as u64,
-                        });
-                    }
-                }
-            }
-        }
-
+        drop(file);
         self.geoid = geoid;
         Ok(())
     }
@@ -239,7 +247,13 @@ impl EgmGrid {
             return Ok(self.geoid[index]);
         }
 
-        let mut file = self.data_file.borrow_mut();
+        let Some(data_file) = self.data_file.as_ref() else {
+            return Err(EgmError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "geoid grid has no backing file and was not preloaded",
+            )));
+        };
+        let mut file = data_file.borrow_mut();
         match self.format {
             GridFormat::Egm96I16Be => {
                 file.seek(SeekFrom::Start((index * 2) as u64))?;
@@ -368,6 +382,59 @@ impl EgmGrid {
     }
 }
 
+/// Reads a full geoid grid from any reader, shared by the file-backed [`EgmGrid::load_data`]
+/// and the in-memory [`EgmGrid::from_bytes`]. Values are stored row-major with `cols_storage`
+/// stride (equal to `lon_bins` for the supported datasets).
+fn read_grid_values<R: Read>(
+    reader: &mut R,
+    format: GridFormat,
+    rows: usize,
+    cols_storage: usize,
+    lon_bins: usize,
+) -> Result<Vec<f64>, EgmError> {
+    let mut geoid = vec![0.0_f64; rows * lon_bins];
+    let index = |row: usize, col: usize| row * cols_storage + col;
+
+    match format {
+        GridFormat::Egm96I16Be => {
+            for row in 0..rows {
+                for col in 0..lon_bins {
+                    let raw = reader.read_i16::<BigEndian>()?;
+                    geoid[index(row, col)] = raw as f64 / 100.0;
+                }
+            }
+        }
+        GridFormat::Egm2008F32LeFortranSequential => {
+            let expected_record_bytes = (lon_bins * 4) as u32;
+            for row in 0..rows {
+                let leading_record_bytes = reader.read_u32::<LittleEndian>()?;
+                if leading_record_bytes != expected_record_bytes {
+                    return Err(EgmError::InvalidGridSize {
+                        model: EgmModel::Egm2008,
+                        expected_bytes: rows * (lon_bins * 4 + 8),
+                        actual_bytes: rows as u64 * leading_record_bytes as u64,
+                    });
+                }
+
+                for col in 0..lon_bins {
+                    geoid[index(row, col)] = reader.read_f32::<LittleEndian>()? as f64;
+                }
+
+                let trailing_record_bytes = reader.read_u32::<LittleEndian>()?;
+                if trailing_record_bytes != expected_record_bytes {
+                    return Err(EgmError::InvalidGridSize {
+                        model: EgmModel::Egm2008,
+                        expected_bytes: rows * (lon_bins * 4 + 8),
+                        actual_bytes: rows as u64 * trailing_record_bytes as u64,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(geoid)
+}
+
 fn dimensions_from_file_size(
     model: EgmModel,
     file_size_bytes: u64,
@@ -410,6 +477,14 @@ impl EGM96 {
     pub fn new(path: &Path) -> Result<Self, EgmError> {
         Ok(Self {
             inner: EgmGrid::egm96(path)?,
+        })
+    }
+
+    /// Builds a fully in-memory EGM96 geoid from raw `WW15MGH.DAC` bytes (e.g. embedded via
+    /// `include_bytes!`), requiring no runtime file path.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EgmError> {
+        Ok(Self {
+            inner: EgmGrid::from_bytes(bytes, EgmModel::Egm96)?,
         })
     }
 
@@ -524,5 +599,30 @@ mod tests {
     fn egm2008_dimensions_reject_invalid_size() {
         let result = dimensions_from_file_size(EgmModel::Egm2008, 1234);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_bytes_matches_file_backed_egm96() {
+        use super::EGM96;
+        use std::path::Path;
+
+        let path = Path::new("data/WW15MGH.DAC");
+        let raw = match std::fs::read(path) {
+            Ok(raw) => raw,
+            // Skip when the dataset is not vendored in this checkout.
+            Err(_) => return,
+        };
+
+        let from_bytes = EGM96::from_bytes(&raw).expect("in-memory EGM96 should parse");
+        let from_file = EGM96::new(path).expect("file-backed EGM96 should open");
+
+        for (lat, lon) in [(0.0, 0.0), (27.9881, 86.925), (4.75, 78.75), (-45.0, -170.0)] {
+            let memory = from_bytes.offset_bilinear(lat, lon).unwrap();
+            let file = from_file.offset_bilinear(lat, lon).unwrap();
+            assert!(
+                (memory - file).abs() < 1e-9,
+                "in-memory vs file geoid mismatch at ({lat}, {lon}): {memory} vs {file}"
+            );
+        }
     }
 }
