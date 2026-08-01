@@ -1,5 +1,6 @@
 [workspace]
-members = [".", "python"]
+members = ["."]
+exclude = ["fuzz"]
 resolver = "2"
 
 [profile.release]
@@ -11,6 +12,27 @@ strip = true
 name = "small_world"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
+description = "Lightweight WGS84 geodesy for robotics and autonomy: LLA/ECEF/NED/ENU frames and explicit AGL/MSL/HAE altitude conversion, differentially validated against PROJ and GDAL."
+repository = "https://github.com/alpacasweater/small_world"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["geodesy", "wgs84", "geoid", "altitude", "robotics"]
+categories = ["science::geo", "aerospace"]
+# Ship what a consumer needs to build, validate, and integrate (src, geoid data, C header +
+# CMake glue, examples, oracle tests, data-download scripts). Keep repo-internal material out.
+exclude = [
+    ".github/",
+    "AGENTS.md",
+    "docs/",
+    "fuzz/",
+]
+
+[features]
+# Embed the EGM96 15-minute geoid grid (data/WW15MGH.DAC, ~2 MiB) into the binary and enable
+# `EGM96::embedded()`, so altitude conversion needs no runtime data path. See NOTICE for the
+# grid's provenance (NGA/NASA, US government work).
+embedded-egm96 = []
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
@@ -22,6 +44,5 @@ byteorder = "1.5"
 libc = "0.2"
 proptest = { version = "1.6", default-features = false, features = ["std"] }
 
-[[example]]
-name = "geoid_offset"
-path = "examples/egm96_geoid_offset.rs"
+[package.metadata.docs.rs]
+all-features = true

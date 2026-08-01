@@ -1,5 +1,10 @@
 # small_world
 
+[![crates.io](https://img.shields.io/crates/v/small_world.svg)](https://crates.io/crates/small_world)
+[![docs.rs](https://img.shields.io/docsrs/small_world)](https://docs.rs/small_world)
+[![CI](https://github.com/alpacasweater/small_world/actions/workflows/ci.yml/badge.svg)](https://github.com/alpacasweater/small_world/actions)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 `small_world` is a lightweight geodesy toolkit for robotics/autonomy that keeps altitude and frame semantics explicit.
 
 ## Why teams use it
@@ -9,39 +14,25 @@
 - Lightweight runtime footprint (`byteorder` only).
 - Differentially validated against trusted geospatial tools (PROJ + GDAL).
 - C ABI and modern CMake support for C++ deployment.
-- Python bindings via PyO3 + Maturin for rapid prototyping and robotics scripting.
-
-## Prerequisites
-
-| Language | Requirement |
-|---|---|
-| Rust | stable toolchain (`rustup update stable`) |
-| Python | Python ≥ 3.9 + `pip install maturin` |
-| C/C++ | Rust toolchain only — no GDAL/PROJ needed to build |
 
 ## Add to your project
 
-**Rust:**
+```toml
+[dependencies]
+small_world = "0.1"
+```
+
+To do altitude conversion without managing any data files, enable the embedded EGM96 geoid
+(~2 MiB added to the binary; see [Data attribution](#data-attribution)):
 
 ```toml
 [dependencies]
-small_world = { path = "../small_world" }
-# or:
-# small_world = { git = "https://github.com/Swarm-Command/small_world.git", branch = "main" }
+small_world = { version = "0.1", features = ["embedded-egm96"] }
 ```
 
-**Python** — build and install from source:
-
-```bash
-pip install maturin
-cd python && maturin develop --release
-```
-
-```python
-from small_world import Lla, Ecef, Ned, Enu, AltitudeConverter, VerticalFrame
-```
-
-See [`python/README.md`](python/README.md) for full Python setup, data configuration, and API reference.
+C/C++ consumers: build from source (`cargo build --release` produces the static and shared
+libraries; the header is [`include/small_world.h`](include/small_world.h)) — see
+[`examples/cpp/README.md`](examples/cpp/README.md) for the CMake walkthrough.
 
 ## Frame contract
 
@@ -62,15 +53,17 @@ Global absolute frames:
 ## Quick start
 
 > Frame-only conversions (`Lla`, `Ecef`, `Ned`, `Enu`) need **no data files**.
-> Altitude conversion (`AGL`/`MSL`/`HAE`) requires a geoid file and SRTM tiles.
+> Altitude conversion (`AGL`/`MSL`/`HAE`) needs a geoid (embed it with the `embedded-egm96`
+> feature, or download it) and, for `AGL`, SRTM terrain tiles.
 
-**Step 1 — data setup** (skip if you only need frame transforms):
+**Step 1 — data setup** (skip if you only need frame transforms, or if you enabled
+`embedded-egm96` and don't need `AGL`):
 
 ```bash
-# Geoid (~2 MB, goes to data/WW15MGH.DAC)
+# Geoid (~2 MB, goes to data/WW15MGH.DAC) — not needed with the embedded-egm96 feature
 ./scripts/download_geoid_data.sh --model egm96
 
-# SRTM tiles for your area of interest
+# SRTM tiles for your area of interest (needed for AGL only)
 ./scripts/download_hgt_tiles.sh \
   --lat-min 38.5 --lat-max 39.5 \
   --lon-min -77.6 --lon-max -76.2 \
@@ -80,11 +73,7 @@ Global absolute frames:
 **Step 2 — run a minimal example:**
 
 ```bash
-# Rust
 cargo run --example minimal_frame_conversion
-
-# Python (after: pip install maturin && cd python && maturin develop --release)
-python examples/minimal_frame_conversion.py
 ```
 
 **Step 3 — altitude conversion in code:**
@@ -94,6 +83,7 @@ use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
 use small_world::egm96::EGM96;
 use small_world::terrain::SrtmDataset;
 
+// With the `embedded-egm96` feature:  let geoid = EGM96::embedded()?;
 let geoid = EGM96::new(std::path::Path::new("data/WW15MGH.DAC"))?;
 let terrain = SrtmDataset::new("data/srtm");
 let converter = AltitudeConverter::new(&geoid, &terrain);
@@ -176,31 +166,29 @@ Concurrency:
 - Shared converter handles are thread-safe but serialize on an internal mutex.
 - For high throughput, use one converter handle per thread.
 
-See `examples/cpp/README.md` for a full CMake integration walkthrough.
-
-## Python
-
-```python
-from small_world import Lla, Ecef, Enu, AltitudeConverter, VerticalFrame
-
-# Frame conversions — no data files needed
-origin = Lla(39.0, -77.0, 150.0)
-ecef   = origin.to_ecef()
-enu    = Enu(10.0, 5.0, 2.0, origin)
-ned    = enu.to_ned(origin)            # n=5, e=10, d=-2
-
-# Altitude conversion — requires data files
-converter = AltitudeConverter("data/WW15MGH.DAC", "data/srtm")
-hae_m = converter.convert_height_m(39.0, -77.0, 120.0, VerticalFrame.Agl, VerticalFrame.Hae)
-```
-
-Full setup guide, API reference, env vars, and examples: [`python/README.md`](python/README.md)
+See [`examples/cpp/README.md`](examples/cpp/README.md) for a full CMake integration walkthrough.
 
 ## More docs
 
 - Production and validation details: [`docs/PRODUCTION.md`](docs/PRODUCTION.md)
-- Python bindings: [`python/`](python/) — PyO3 source, type stubs, tests, examples
 - C++ and CMake integration walkthrough: [`examples/cpp/README.md`](examples/cpp/README.md)
 - Canonical compact Rust example: [`examples/minimal_frame_conversion.rs`](examples/minimal_frame_conversion.rs)
 - Performance gate runner: [`scripts/run_perf_smoke.sh`](scripts/run_perf_smoke.sh)
 - C ABI/header sync checker: [`scripts/verify_c_header_sync.sh`](scripts/verify_c_header_sync.sh)
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed
+as above, without any additional terms or conditions.
+
+## Data attribution
+
+The bundled EGM96 geoid grid (`data/WW15MGH.DAC`) is a U.S. Government work produced by
+NIMA (now NGA) and NASA GSFC, redistributed unmodified; it is data, not code, and is not
+covered by the licenses above. Details and sources: [NOTICE](NOTICE).

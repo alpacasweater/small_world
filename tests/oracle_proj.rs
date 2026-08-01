@@ -374,7 +374,7 @@ fn lla_to_ned_matches_proj_oracle() -> Result<(), String> {
         }
 
         let oracle_ned = proj_lla_to_ned(origin, &points)?;
-        for (point, oracle) in points.into_iter().zip(oracle_ned.into_iter()) {
+        for (point, oracle) in points.into_iter().zip(oracle_ned) {
             let our = Ned::from_lla(
                 Lla::new(point.lat_deg, point.lon_deg, point.hae_m, AltType::Wgs84),
                 origin_lla,
@@ -431,7 +431,7 @@ fn ned_to_lla_matches_proj_oracle() -> Result<(), String> {
         }
 
         let oracle_lla = proj_ned_to_lla(origin, &ned_points)?;
-        for (ned, oracle) in ned_points.into_iter().zip(oracle_lla.into_iter()) {
+        for (ned, oracle) in ned_points.into_iter().zip(oracle_lla) {
             let our = Ned::new(ned.n_m, ned.e_m, ned.d_m, origin_lla).to_lla();
             let our_lla = OracleLla {
                 lat_deg: our.lat_deg(),
@@ -663,7 +663,7 @@ fn lla_to_ecef_matches_proj_oracle() -> Result<(), String> {
     }
 
     let oracle_ecef = proj_lla_to_ecef(&points)?;
-    for (point, oracle) in points.into_iter().zip(oracle_ecef.into_iter()) {
+    for (point, oracle) in points.into_iter().zip(oracle_ecef) {
         let our = Lla::new(point.lat_deg, point.lon_deg, point.hae_m, AltType::Wgs84).to_ecef();
         let component_err = (our.x() - oracle.x())
             .abs()
@@ -709,7 +709,7 @@ fn ecef_to_lla_matches_proj_oracle() -> Result<(), String> {
     let ecef_points = proj_lla_to_ecef(&lla_points)?;
     let oracle_lla = proj_ecef_to_lla(&ecef_points)?;
 
-    for (ecef, oracle) in ecef_points.into_iter().zip(oracle_lla.into_iter()) {
+    for (ecef, oracle) in ecef_points.into_iter().zip(oracle_lla) {
         let our = Lla::from_ecef(ecef);
         let our_lla = OracleLla {
             lat_deg: our.lat_deg(),

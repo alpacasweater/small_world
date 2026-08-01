@@ -1,0 +1,30 @@
+# NOTICE — bundled data provenance
+
+## data/WW15MGH.DAC — EGM96 15-minute geoid undulation grid
+
+This repository (and the published crate) includes `data/WW15MGH.DAC`, the
+WW15MGH 15-arc-minute worldwide geoid-height grid of the Earth Gravitational
+Model 1996 (EGM96).
+
+- Producers: the U.S. National Imagery and Mapping Agency (NIMA, today the
+  National Geospatial-Intelligence Agency, NGA) and the NASA Goddard Space
+  Flight Center, with The Ohio State University.
+- Source: the NGA / NASA EGM96 model distribution
+  (https://earth-info.nga.mil/ and
+  https://cddis.nasa.gov/926/egm96/egm96.html).
+- Status: a work of the United States Government, distributed publicly and,
+  as a U.S. Government work, not subject to copyright protection in the
+  United States (17 U.S.C. § 105).
+
+The grid file is data, not code: it is *not* covered by this crate's MIT or
+Apache-2.0 license, and nothing in this repository claims copyright over it.
+It is redistributed here unmodified (verified by the loader's dimensional
+checks) for build-time embedding (`embedded-egm96` feature) and for tests.
+
+Use of the data does not imply endorsement by NGA, NIMA, or NASA.
+
+## data/oracle_srtm_sha256.txt
+
+Checksums only. The SRTM terrain tiles they pin are *not* redistributed in
+this repository or crate; the download scripts fetch them from their official
+sources, and their own terms apply.
