@@ -1,13 +1,8 @@
 # AGENTS.md
 
-## Purpose
-Project handoff memory for `small_world`.
-Use this file to restore context quickly, preserve API decisions, and keep frame semantics unambiguous.
-
-## Snapshot (2026-03-05)
-- Branch: `main`
-- Last known synced commit: `8a9790f` on `origin/main`
-- Product direction: production-ready, converter-first altitude API
+Engineering guide for contributors and coding agents working on `small_world`.
+It records the API decisions that are locked, the frame semantics that are
+non-negotiable, and the quality gates every change must pass.
 
 ## What Was Decided
 
@@ -125,19 +120,7 @@ Current public `sw_*` functions (authoritative: `include/small_world.h`):
 - `tests/oracle_altitude.rs`: supplemental analytic invariant tests for frame algebra
 - `scripts/download_hgt_tiles.sh`: bbox-based SRTM `.hgt` downloader with size cap (default 5 GiB)
 - `scripts/run_oracle_validation.sh`: local/CI oracle validation entrypoint
-- `Readme.md`: user docs and conversion matrices
-
-### Python bindings (`python/`)
-- `python/Cargo.toml`: `small_world_py` crate — PyO3 extension (`_small_world.cdylib`)
-- `python/pyproject.toml`: Maturin build config, pytest settings
-- `python/src/lib.rs`: all PyO3 `#[pyclass]`/`#[pymethods]` bindings; `OwnedGeoid` enum for lifetime-free `AltitudeConverter` ownership
-- `python/small_world/__init__.py`: re-exports from the compiled extension
-- `python/small_world/_small_world.pyi`: PEP 561 type stubs for all public classes
-- `python/tests/conftest.py`: data-availability fixtures and skip markers
-- `python/tests/test_wgs84.py`: WGS84 frame conversion tests (no data files required)
-- `python/tests/test_altitude.py`: altitude converter and geoid tests (skipped when data absent)
-- `python/examples/minimal_frame_conversion.py`: LLA/ECEF/ENU/NED demo
-- `python/examples/altitude_conversion.py`: AGL→MSL→HAE CLI demo
+- `README.md`: user docs and conversion matrices
 
 ## CI Topology
 - `stable-checks` (Ubuntu): full gates including oracle + perf + docs.
@@ -214,66 +197,14 @@ Before declaring production-ready:
 - Prefer methods that spell intent:
   - `convert_height_m(..., from, to)` over implicit `convert(...)`
 
-## jcodemunch — Mandatory Code Intelligence Tool
+## Licensing and Release
 
-**All agents working in this repo must use jcodemunch before reading files directly.**
-jcodemunch is indexed at `local/small_world-ba36cdc8`. Using it saves significant tokens (~$0.25–$0.40/session vs. reading raw files).
-
-### Workflow rules
-
-1. **Re-index first** (incremental — fast):
-   ```
-   mcp__jcodemunch__index_folder(path="<repo_root>", incremental=true)
-   ```
-   Do this at the start of every session and after making file changes.
-
-2. **Look up symbols before reading files.** Use these tools in order of preference:
-   - `search_symbols(query, repo)` — find functions/types by name or concept
-   - `get_file_outline(repo, file_path)` — get all symbols in a file with signatures
-   - `get_symbol(repo, symbol_id)` — fetch a single symbol's full body
-   - Only fall back to `Read` when you need complete file context (e.g., test file bodies, config files with no symbols)
-
-3. **Never read an entire source file to find a function.** Use `search_symbols` instead.
-
-4. **Keep the index current.** After adding, renaming, or deleting files run `index_folder` again with `incremental=true`.
-
-### Quick reference
-
-| Task | Tool |
-|---|---|
-| Find where `convert_height_m` is defined | `search_symbols(query="convert_height_m")` |
-| List all symbols in `src/altitude.rs` | `get_file_outline(file_path="src/altitude.rs")` |
-| See the full body of a specific function | `get_symbol(symbol_id=<id from outline>)` |
-| Explore the full repo structure | `get_repo_outline(repo="local/small_world-ba36cdc8")` |
-| Find all callers of a function | `find_references(symbol_id=...)` |
-
-### Current index state (2026-03-12)
-- Repo ID: `local/small_world-ba36cdc8`
-- Symbols: 681 (Rust × 21 files, Python × 5 files, C/C++ × 3 files, Bash × 9, Python scripts × 1)
-- Re-indexing takes < 1 second (incremental)
-
----
-
-## Resume Steps for the Next Agent
-1. Check repo state: `git status -sb`.
-2. Confirm docs and examples are converter-first only.
-3. Run full quality gate commands.
-4. Read `src/altitude.rs` and `src/wgs84.rs` before touching conversions.
-5. If API changes are required, update:
-   - tests
-   - `examples/minimal_frame_conversion.rs`
-   - `python/src/lib.rs` (Python bindings)
-   - `python/small_world/_small_world.pyi` (type stubs)
-   - `Readme.md`
-   in the same commit.
-
-### Python bindings quality gate
-After any change to Rust sources, rebuild and re-test Python bindings:
-
-```bash
-cd python
-maturin develop
-pytest
-```
-
-Verify that WGS84 round-trip tests pass without data files, and altitude tests skip gracefully when data is absent.
+- Dual licensed `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`); contributions are
+  accepted under the same terms.
+- `data/WW15MGH.DAC` is U.S. Government data (NGA/NASA EGM96), not covered by the code
+  licenses — provenance lives in `NOTICE`, and any change touching the data or its embedding
+  must keep `NOTICE` accurate.
+- The `embedded-egm96` feature embeds that grid via `include_bytes!`; it must stay optional so
+  default builds carry no data payload.
+- Published crate contents are governed by `package.exclude` in `Cargo.toml`; repo-internal
+  material (this file, `docs/`, `.github/`, `fuzz/`) stays out of the package.
