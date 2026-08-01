@@ -488,6 +488,16 @@ impl EGM96 {
         })
     }
 
+    /// Builds the EGM96 geoid from the grid embedded in the binary at compile time — no runtime
+    /// data path or download step. Adds ~2 MiB to the binary.
+    ///
+    /// The embedded grid is the crate's own `data/WW15MGH.DAC` (see the repository `NOTICE` for
+    /// provenance: NGA/NASA EGM96, a U.S. Government work).
+    #[cfg(feature = "embedded-egm96")]
+    pub fn embedded() -> Result<Self, EgmError> {
+        Self::from_bytes(include_bytes!("../data/WW15MGH.DAC"))
+    }
+
     pub fn load_data(&mut self) -> Result<(), EgmError> {
         self.inner.load_data()
     }
@@ -616,12 +626,35 @@ mod tests {
         let from_bytes = EGM96::from_bytes(&raw).expect("in-memory EGM96 should parse");
         let from_file = EGM96::new(path).expect("file-backed EGM96 should open");
 
-        for (lat, lon) in [(0.0, 0.0), (27.9881, 86.925), (4.75, 78.75), (-45.0, -170.0)] {
+        for (lat, lon) in [
+            (0.0, 0.0),
+            (27.9881, 86.925),
+            (4.75, 78.75),
+            (-45.0, -170.0),
+        ] {
             let memory = from_bytes.offset_bilinear(lat, lon).unwrap();
             let file = from_file.offset_bilinear(lat, lon).unwrap();
             assert!(
                 (memory - file).abs() < 1e-9,
                 "in-memory vs file geoid mismatch at ({lat}, {lon}): {memory} vs {file}"
+            );
+        }
+    }
+
+    /// The embedded grid must reproduce the published NGA EGM96 reference undulations. Anchors
+    /// (sub-metre agreement expected with bilinear interpolation):
+    /// (0°N, 0°E) = +17.16 m; Everest (27.9881°N, 86.925°E) = −28.74 m.
+    #[cfg(feature = "embedded-egm96")]
+    #[test]
+    fn embedded_grid_matches_reference_undulations() {
+        use super::EGM96;
+
+        let geoid = EGM96::embedded().expect("embedded EGM96 should parse");
+        for (lat, lon, expected_m) in [(0.0, 0.0, 17.16), (27.9881, 86.925, -28.74)] {
+            let n = geoid.offset_bilinear(lat, lon).unwrap();
+            assert!(
+                (n - expected_m).abs() < 1.0,
+                "undulation at ({lat}, {lon}): got {n}, reference {expected_m}"
             );
         }
     }
