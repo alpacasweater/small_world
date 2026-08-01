@@ -77,6 +77,11 @@ Git policy:
 - Keep large datasets out of git history.
 - `data/EGM2008_2_5.DAC` stays ignored in `.gitignore`.
 
+Missing-data UX policy:
+- A missing geoid file must fail with `EgmError::DatasetMissing`, whose message contains the
+  exact fetch command (`EgmModel::download_command()`). Keep that command in sync with
+  `scripts/download_geoid_data.sh`, and keep the EGM96 arm advertising `embedded-egm96`.
+
 ## C/C++ ABI Surface
 - C ABI entry points live in `src/ffi.rs`.
 - Public C header lives in `include/small_world.h`.

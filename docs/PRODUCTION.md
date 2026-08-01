@@ -124,6 +124,17 @@ Geoid (NGA):
 - EGM96 interpolation grid: <https://earth-info.nga.mil/php/download.php?file=egm-96interpolation>
 - EGM2008 interpolation grid: <https://earth-info.nga.mil/php/download.php?file=egm-08interpolation>
 
+Fetch and stage either with one command (`scripts/download_geoid_data.sh` handles archive
+layout and optional checksum pinning):
+
+```bash
+./scripts/download_geoid_data.sh --model egm96    # -> data/WW15MGH.DAC   (~2 MB)
+./scripts/download_geoid_data.sh --model egm2008  # -> data/EGM2008_2_5.DAC (~142 MB)
+```
+
+EGM96 can instead be embedded at build time (`embedded-egm96` feature, `EGM96::embedded()`);
+EGM2008 cannot — its grid is an order of magnitude past the crates.io package limit.
+
 Terrain options:
 - SRTM GL1/GL3: <https://www.earthdata.nasa.gov/data/catalog/lpcloud-srtmgl1n-003>
 - Copernicus DEM GLO-30/GLO-90: <https://registry.opendata.aws/copernicus-dem/>

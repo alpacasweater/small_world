@@ -53,17 +53,33 @@ Global absolute frames:
 ## Quick start
 
 > Frame-only conversions (`Lla`, `Ecef`, `Ned`, `Enu`) need **no data files**.
-> Altitude conversion (`AGL`/`MSL`/`HAE`) needs a geoid (embed it with the `embedded-egm96`
-> feature, or download it) and, for `AGL`, SRTM terrain tiles.
+> Altitude conversion (`AGL`/`MSL`/`HAE`) needs a geoid; `AGL` additionally needs SRTM tiles.
 
-**Step 1 — data setup** (skip if you only need frame transforms, or if you enabled
-`embedded-egm96` and don't need `AGL`):
+**Step 1 — pick a geoid:**
+
+| | Setup | Use |
+|---|---|---|
+| **EGM96, embedded** (recommended start) | none — just the `embedded-egm96` feature | `EGM96::embedded()?` |
+| **EGM96, downloaded** (~2 MB) | one command, below | `EGM96::new("data/WW15MGH.DAC".as_ref())?` |
+| **EGM2008, downloaded** (~142 MB, 2.5′ resolution) | one command, below | `EGM2008::new("data/EGM2008_2_5.DAC".as_ref())?` |
+
+The download one-liners (work anywhere; no repo checkout needed):
 
 ```bash
-# Geoid (~2 MB, goes to data/WW15MGH.DAC) — not needed with the embedded-egm96 feature
-./scripts/download_geoid_data.sh --model egm96
+curl -fsSL https://raw.githubusercontent.com/alpacasweater/small_world/main/scripts/download_geoid_data.sh | bash -s -- --model egm96
+curl -fsSL https://raw.githubusercontent.com/alpacasweater/small_world/main/scripts/download_geoid_data.sh | bash -s -- --model egm2008
+```
 
-# SRTM tiles for your area of interest (needed for AGL only)
+(In a checkout: `./scripts/download_geoid_data.sh --model egm96|egm2008`. Prefer to read
+before running? The script lives at [`scripts/download_geoid_data.sh`](scripts/download_geoid_data.sh)
+and supports `--sha256-egm96`/`--sha256-egm2008` for checksum pinning.)
+
+You can't get this wrong quietly: constructing a geoid from a missing file returns an error
+whose message contains the exact command above.
+
+**Also for `AGL`: SRTM tiles for your area of interest:**
+
+```bash
 ./scripts/download_hgt_tiles.sh \
   --lat-min 38.5 --lat-max 39.5 \
   --lon-min -77.6 --lon-max -76.2 \
@@ -83,8 +99,9 @@ use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
 use small_world::egm96::EGM96;
 use small_world::terrain::SrtmDataset;
 
-// With the `embedded-egm96` feature:  let geoid = EGM96::embedded()?;
-let geoid = EGM96::new(std::path::Path::new("data/WW15MGH.DAC"))?;
+let geoid = EGM96::embedded()?; // zero-setup (embedded-egm96 feature)
+// or: EGM96::new(std::path::Path::new("data/WW15MGH.DAC"))?
+// or: EGM2008::new(std::path::Path::new("data/EGM2008_2_5.DAC"))? — higher resolution
 let terrain = SrtmDataset::new("data/srtm");
 let converter = AltitudeConverter::new(&geoid, &terrain);
 
