@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
@@ -46,6 +46,20 @@ impl EgmModel {
             EgmModel::Egm2008 => "EGM2008_2_5.DAC",
         }
     }
+
+    /// A copy-pasteable shell command that fetches and stages this model's grid under `data/`,
+    /// without needing a checkout of this repository. Surfaced by [`EgmError::DatasetMissing`] so
+    /// a missing dataset explains its own fix.
+    pub fn download_command(self) -> String {
+        let model = match self {
+            EgmModel::Egm96 => "egm96",
+            EgmModel::Egm2008 => "egm2008",
+        };
+        format!(
+            "curl -fsSL https://raw.githubusercontent.com/alpacasweater/small_world/main/\
+scripts/download_geoid_data.sh | bash -s -- --model {model}"
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -63,6 +77,12 @@ pub enum EgmError {
         model: EgmModel,
         expected_bytes: usize,
         actual_bytes: u64,
+    },
+    /// The grid file does not exist. Carries everything needed to fix it: the Display message
+    /// includes the exact download command (and, for EGM96, the embedded-data alternative).
+    DatasetMissing {
+        model: EgmModel,
+        path: PathBuf,
     },
 }
 
@@ -98,6 +118,23 @@ impl Display for EgmError {
                     model, expected_bytes, actual_bytes
                 )
             }
+            EgmError::DatasetMissing { model, path } => {
+                write!(
+                    f,
+                    "{:?} geoid grid not found at {} — fetch it with: {}",
+                    model,
+                    path.display(),
+                    model.download_command()
+                )?;
+                if *model == EgmModel::Egm96 {
+                    write!(
+                        f,
+                        " (or skip the download: enable the `embedded-egm96` feature and use \
+EGM96::embedded())"
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -110,6 +147,7 @@ impl Error for EgmError {
             EgmError::InvalidLongitude(_) => None,
             EgmError::InvalidIndex { .. } => None,
             EgmError::InvalidGridSize { .. } => None,
+            EgmError::DatasetMissing { .. } => None,
         }
     }
 }
@@ -137,7 +175,16 @@ pub struct EgmGrid {
 
 impl EgmGrid {
     pub fn new(path: &Path, model: EgmModel) -> Result<Self, EgmError> {
-        let file = File::open(path)?;
+        let file = File::open(path).map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                EgmError::DatasetMissing {
+                    model,
+                    path: path.to_path_buf(),
+                }
+            } else {
+                EgmError::Io(err)
+            }
+        })?;
         let file_size = file.metadata()?.len();
         let (rows, cols_storage, lon_bins, format) = dimensions_from_file_size(model, file_size)?;
         let lat_step_deg = 180.0 / (rows as f64 - 1.0);
@@ -469,6 +516,7 @@ fn dimensions_from_file_size(
     }
 }
 
+#[derive(Debug)]
 pub struct EGM96 {
     inner: EgmGrid,
 }
@@ -527,6 +575,17 @@ impl EGM96 {
     }
 }
 
+/// The EGM2008 2.5-arc-minute geoid. Higher resolution than [`EGM96`], but its official NGA grid
+/// is ~142 MiB on disk (~285 MiB resident once loaded), so it cannot be embedded in the crate the
+/// way `embedded-egm96` embeds EGM96. Fetch it with one command (also printed by the error when
+/// the file is missing):
+///
+/// ```sh
+/// curl -fsSL https://raw.githubusercontent.com/alpacasweater/small_world/main/scripts/download_geoid_data.sh | bash -s -- --model egm2008
+/// ```
+///
+/// or in a checkout: `./scripts/download_geoid_data.sh --model egm2008`.
+#[derive(Debug)]
 pub struct EGM2008 {
     inner: EgmGrid,
 }
@@ -535,6 +594,16 @@ impl EGM2008 {
     pub fn new(path: &Path) -> Result<Self, EgmError> {
         Ok(Self {
             inner: EgmGrid::egm2008(path)?,
+        })
+    }
+
+    /// Builds a fully in-memory EGM2008 geoid from raw grid bytes (the same byte layout as the
+    /// official `EGM2008_2_5.DAC` file: little-endian f32 rows with Fortran record markers).
+    /// Useful when the grid is delivered by something other than the filesystem — an application
+    /// cache, an object store, a memory-mapped region.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EgmError> {
+        Ok(Self {
+            inner: EgmGrid::from_bytes(bytes, EgmModel::Egm2008)?,
         })
     }
 
@@ -639,6 +708,89 @@ mod tests {
                 "in-memory vs file geoid mismatch at ({lat}, {lon}): {memory} vs {file}"
             );
         }
+    }
+
+    #[test]
+    fn missing_dataset_error_explains_its_own_fix() {
+        use super::{EgmError, EGM2008, EGM96};
+        use std::path::Path;
+
+        // The one part of "trivial for new users" a doc can't provide: the failure itself must
+        // carry the fix. Both models, both hints.
+        let err = EGM2008::new(Path::new("data/definitely_not_here.DAC")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            matches!(err, EgmError::DatasetMissing { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            msg.contains("download_geoid_data.sh"),
+            "no fetch command: {msg}"
+        );
+        assert!(
+            msg.contains("--model egm2008"),
+            "wrong model in command: {msg}"
+        );
+        assert!(
+            msg.contains("definitely_not_here.DAC"),
+            "path missing: {msg}"
+        );
+
+        let msg96 = EGM96::new(Path::new("data/also_not_here.DAC"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg96.contains("--model egm96"), "wrong model: {msg96}");
+        assert!(
+            msg96.contains("embedded-egm96"),
+            "EGM96 must advertise the zero-download alternative: {msg96}"
+        );
+
+        // Only absence maps to the guidance error; other I/O failures must stay I/O errors.
+        // (A directory in place of the file opens fine on Unix but fails at metadata/read; the
+        // NotFound mapping alone is what we assert here.)
+    }
+
+    /// Full-size synthetic EGM2008 grid: exercises the real 2.5-minute parse path (record
+    /// markers, layout, value decoding) without the 142 MiB NGA dataset, which cannot be
+    /// committed and is not present on CI. Values are chosen to be exact in f32.
+    #[test]
+    fn egm2008_from_bytes_parses_a_synthetic_grid_and_rejects_corruption() {
+        use super::{EGM2008, EGM2008_COLS, EGM2008_ROWS};
+
+        let value = |row: usize, col: usize| ((row % 200) as f32) - ((col % 100) as f32) * 0.5;
+
+        let record = (EGM2008_COLS * 4) as u32;
+        let mut bytes = Vec::with_capacity(EGM2008_ROWS * (EGM2008_COLS * 4 + 8));
+        for row in 0..EGM2008_ROWS {
+            bytes.extend_from_slice(&record.to_le_bytes());
+            for col in 0..EGM2008_COLS {
+                bytes.extend_from_slice(&value(row, col).to_le_bytes());
+            }
+            bytes.extend_from_slice(&record.to_le_bytes());
+        }
+
+        let grid = EGM2008::from_bytes(&bytes).expect("synthetic grid should parse");
+        for (row, col) in [
+            (0, 0),
+            (0, EGM2008_COLS - 1),
+            (EGM2008_ROWS - 1, 0),
+            (EGM2008_ROWS - 1, EGM2008_COLS - 1),
+            (EGM2008_ROWS / 2, EGM2008_COLS / 2),
+        ] {
+            let got = grid.read_geoid_value(row, col).unwrap();
+            let expected = value(row, col) as f64;
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "({row}, {col}): got {got}, expected {expected}"
+            );
+        }
+
+        // A corrupted Fortran record marker must be rejected, not silently misread as data.
+        bytes[0] ^= 0xFF;
+        assert!(
+            EGM2008::from_bytes(&bytes).is_err(),
+            "corrupt record marker must fail"
+        );
     }
 
     /// The embedded grid must reproduce the published NGA EGM96 reference undulations. Anchors
