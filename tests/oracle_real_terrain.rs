@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
+use small_world::altitude::{AltitudeConverter, EgmModel, GeoPoint, VerticalFrame};
 use small_world::geoid::EGM96;
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
@@ -296,7 +296,12 @@ fn real_terrain_oracle_alignment_is_within_tolerance() -> Result<(), String> {
         max_geoid_err = max_geoid_err.max((geoid_ours - geoid_oracle[i]).abs());
 
         let hae_ours = converter
-            .convert_height_m(point, test_msl, VerticalFrame::Msl, VerticalFrame::Hae)
+            .convert_height_m(
+                point,
+                test_msl,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+            )
             .map_err(|err| err.to_string())?;
         let hae_expected = test_msl + geoid_oracle[i];
         max_height_err = max_height_err.max((hae_ours - hae_expected).abs());

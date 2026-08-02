@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
+use small_world::altitude::{AltitudeConverter, EgmModel, GeoPoint, VerticalFrame};
 use small_world::geoid::EGM96;
 use small_world::terrain::SrtmDataset;
 
@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             point,
             AGL_INPUT_M,
             VerticalFrame::Agl,
-            VerticalFrame::Msl,
+            VerticalFrame::Msl(EgmModel::Egm96),
         )?;
         let hae_from_agl_ours = converter.convert_height_m(
             point,
@@ -167,14 +167,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let agl_from_msl_ours = converter.convert_height_m(
             point,
             MSL_INPUT_M,
-            VerticalFrame::Msl,
+            VerticalFrame::Msl(EgmModel::Egm96),
             VerticalFrame::Agl,
         )?;
         let msl_from_hae_ours = converter.convert_height_m(
             point,
             HAE_INPUT_M,
             VerticalFrame::Hae,
-            VerticalFrame::Msl,
+            VerticalFrame::Msl(EgmModel::Egm96),
         )?;
 
         let ground_msl_oracle = query_gdal_bilinear(&hgt_path, lat_deg, lon_deg)?;

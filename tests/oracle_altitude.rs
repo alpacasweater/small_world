@@ -1,6 +1,6 @@
 use small_world::altitude::{
-    AltitudeConverter, AltitudeError, AltitudeSample, GeoPoint, GeoidProvider, TerrainProvider,
-    VerticalFrame,
+    AltitudeConverter, AltitudeError, AltitudeSample, EgmModel, GeoPoint, GeoidProvider,
+    TerrainProvider, VerticalFrame,
 };
 use small_world::height::Interpolation;
 
@@ -14,6 +14,10 @@ struct ConstGeoid {
 }
 
 impl GeoidProvider for ConstGeoid {
+    fn model(&self) -> EgmModel {
+        EgmModel::Egm96
+    }
+
     fn geoid_offset_m(
         &self,
         _lat_deg: f64,
@@ -29,6 +33,10 @@ struct ConstTerrain {
 }
 
 impl TerrainProvider for ConstTerrain {
+    fn vertical_datum(&self) -> EgmModel {
+        EgmModel::Egm96
+    }
+
     fn terrain_msl_m(
         &self,
         _lat_deg: f64,
@@ -53,7 +61,7 @@ fn uniform(seed: &mut u64, min: f64, max: f64) -> f64 {
 fn frame_from_index(index: usize) -> VerticalFrame {
     match index {
         0 => VerticalFrame::Agl,
-        1 => VerticalFrame::Msl,
+        1 => VerticalFrame::Msl(EgmModel::Egm96),
         _ => VerticalFrame::Hae,
     }
 }
@@ -67,12 +75,12 @@ fn oracle_convert(
 ) -> f64 {
     let msl_m = match source {
         VerticalFrame::Agl => value_m + g_m,
-        VerticalFrame::Msl => value_m,
+        VerticalFrame::Msl(_) => value_m,
         VerticalFrame::Hae => value_m - n_m,
     };
     match target {
         VerticalFrame::Agl => msl_m - g_m,
-        VerticalFrame::Msl => msl_m,
+        VerticalFrame::Msl(_) => msl_m,
         VerticalFrame::Hae => msl_m + n_m,
     }
 }

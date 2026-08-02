@@ -29,6 +29,11 @@ typedef enum SwInterpolation {
 
 typedef enum SwVerticalFrame {
   SW_FRAME_AGL = 0,
+  /* MSL is relative to the geoid model the converter was created with (EGM96 or EGM2008).
+   * Feeding this converter MSL values referenced to a different model is a datum error the
+   * C ABI cannot detect -- re-reference such values before the call. AGL conversions return
+   * SW_STATUS_INVALID_ARGUMENT when the terrain dataset's vertical datum (SRTM: EGM96) does
+   * not match the converter's geoid model. */
   SW_FRAME_MSL = 1,
   SW_FRAME_HAE = 2,
 } SwVerticalFrame;

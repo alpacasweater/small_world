@@ -54,15 +54,20 @@ Global absolute frames:
 
 "MSL" is not a single datum: an orthometric height is relative to a specific **geoid model**,
 and the two models this crate supports disagree by decimeters over much of the Earth (locally
-approaching a meter). At RTK/centimeter accuracy that disagreement *is* your error budget:
+approaching a meter). At RTK/centimeter accuracy that disagreement *is* your error budget — so
+the model is part of the type, not a comment:
 
-- The geoid you build the converter with **defines what `Msl` means** for that converter.
-  Match it to the model your data source actually uses — many GNSS receivers report MSL
-  against a built-in (often coarse, EGM96-derived) geoid table.
-- When you control the interface, exchange heights as **HAE** and convert to MSL only at the
-  presentation edge; HAE is model-free.
-- `EGM96::model()` / `EGM2008::model()` report provenance, so it can be logged or asserted
-  instead of assumed.
+- `VerticalFrame::Msl(EgmModel)` names its model. Conversions **verify the tag against the
+  converter's geoid** and fail with `GeoidModelMismatch` rather than silently reinterpreting a
+  value — a mistake worth 10–100× RTK measurement noise refuses to compile into an answer.
+- `AGL` conversions verify the **terrain dataset's vertical datum** against the geoid
+  (`TerrainDatumMismatch` otherwise): SRTM heights are EGM96-referenced, so pairing them with
+  an EGM2008 geoid would mix datums inside a single sum.
+- The untagged pairwise helpers (`hae_from_msl`, …) operate in the converter's own model —
+  `converter.geoid_model()` reports which that is.
+- If a data source doesn't document its MSL model (many GNSS receivers use built-in, often
+  coarse, EGM96-derived tables), resolve that before trusting centimeters — or sidestep it by
+  exchanging heights as **HAE**, which is model-free.
 
 ## Quick start
 

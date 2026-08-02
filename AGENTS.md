@@ -53,7 +53,11 @@ Compatibility helpers (keep while needed by existing callsites):
 
 ## Frame Semantics (Non-Negotiable)
 - `AGL`: meters above local terrain.
-- `MSL`: orthometric height above mean sea level (geoid-referenced).
+- `MSL`: orthometric height above a **named geoid model** — `VerticalFrame::Msl(EgmModel)`.
+  Converters reject `Msl` tags that differ from their geoid (`GeoidModelMismatch`) and `AGL`
+  conversions over a terrain datum that differs from the geoid (`TerrainDatumMismatch`).
+  Never add an untagged MSL path; the C ABI's untagged `SW_FRAME_MSL` resolves to the
+  converter's own model, which keeps it unambiguous by construction.
 - `HAE`: ellipsoidal height above WGS84 ellipsoid.
 - `ECEF`: Earth-Centered, Earth-Fixed Cartesian meters on WGS84 axes.
 - `NED`: `d` is positive down.

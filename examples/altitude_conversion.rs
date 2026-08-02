@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use small_world::altitude::{
-    AltitudeConverter, AltitudeError, AltitudeSample, GeoPoint, VerticalFrame,
+    AltitudeConverter, AltitudeError, AltitudeSample, EgmModel, GeoPoint, VerticalFrame,
 };
 use small_world::geoid::{EGM2008, EGM96};
 use small_world::height::Interpolation;
@@ -19,7 +19,7 @@ fn print_usage() {
 fn parse_height_ref(value: &str) -> Option<VerticalFrame> {
     match value.to_ascii_lowercase().as_str() {
         "agl" => Some(VerticalFrame::Agl),
-        "msl" => Some(VerticalFrame::Msl),
+        "msl" => Some(VerticalFrame::Msl(EgmModel::Egm96)),
         "hae" => Some(VerticalFrame::Hae),
         _ => None,
     }
@@ -28,7 +28,7 @@ fn parse_height_ref(value: &str) -> Option<VerticalFrame> {
 fn frame_name(frame: VerticalFrame) -> &'static str {
     match frame {
         VerticalFrame::Agl => "AGL (m above terrain)",
-        VerticalFrame::Msl => "MSL (orthometric meters)",
+        VerticalFrame::Msl(_) => "MSL (orthometric meters)",
         VerticalFrame::Hae => "HAE (ellipsoidal meters above WGS84)",
     }
 }

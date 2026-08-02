@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::path::Path;
 
-use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
+use small_world::altitude::{AltitudeConverter, EgmModel, GeoPoint, VerticalFrame};
 use small_world::geoid::{EGM2008, EGM96};
 use small_world::terrain::SrtmDataset;
 use small_world::wgs84::{Enu, Ned};
@@ -14,10 +14,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let c08 = AltitudeConverter::new(&egm2008, &terrain);
 
     // EXAMPLE 1: ENU point at MSL(EGM2008) origin -> NED point at MSL(EGM96) origin.
-    let enu_origin =
-        c08.lla_wgs84_from_height_m(GeoPoint::new(39.0000, -77.0000)?, 110.0, VerticalFrame::Msl)?;
-    let ned_origin =
-        c96.lla_wgs84_from_height_m(GeoPoint::new(39.0005, -77.0008)?, 120.0, VerticalFrame::Msl)?;
+    let enu_origin = c08.lla_wgs84_from_height_m(
+        GeoPoint::new(39.0000, -77.0000)?,
+        110.0,
+        VerticalFrame::Msl(EgmModel::Egm96),
+    )?;
+    let ned_origin = c96.lla_wgs84_from_height_m(
+        GeoPoint::new(39.0005, -77.0008)?,
+        120.0,
+        VerticalFrame::Msl(EgmModel::Egm96),
+    )?;
     let ned_point_m = Enu::new(15.0, -4.0, 3.0, enu_origin).to_ned(ned_origin);
     println!(
         "ENU->NED (m): n={:.3}, e={:.3}, d={:.3}",
@@ -42,8 +48,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // EXAMPLE 3: altitude sample with explicit frame -> absolute ECEF, then back to MSL.
     let point = GeoPoint::new(39.0000, -77.0000)?;
-    let point_ecef = c96.ecef_wgs84_from_height_m(point, 110.0, VerticalFrame::Msl)?;
-    let recovered_msl_m = c96.height_from_ecef_wgs84_m(point_ecef, VerticalFrame::Msl)?;
+    let point_ecef =
+        c96.ecef_wgs84_from_height_m(point, 110.0, VerticalFrame::Msl(EgmModel::Egm96))?;
+    let recovered_msl_m =
+        c96.height_from_ecef_wgs84_m(point_ecef, VerticalFrame::Msl(EgmModel::Egm96))?;
     println!(
         "MSL->ECEF->MSL: x={:.3}, y={:.3}, z={:.3}, msl_m={:.3}",
         point_ecef.x(),

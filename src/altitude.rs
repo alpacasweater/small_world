@@ -8,6 +8,8 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use crate::geoid::{EgmError, EGM2008, EGM96};
+
+pub use crate::geoid::EgmModel;
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, TerrainError};
 use crate::wgs84::{AltType, Ecef, Lla};
@@ -19,15 +21,16 @@ use crate::wgs84::{AltType, Ecef, Lla};
 pub enum VerticalFrame {
     /// Height above local terrain surface from the DEM (`terrain_msl`).
     Agl,
-    /// Orthometric height above mean sea level (MSL).
+    /// Orthometric height above mean sea level, **relative to the named geoid model**.
     ///
-    /// **MSL is model-relative.** "Mean sea level" here means the geoid the converter was built
-    /// with, and different geoid models disagree: EGM96 and EGM2008 undulations differ by
-    /// decimeters over much of the Earth (locally approaching a meter). That dwarfs RTK-grade
-    /// measurement noise, so at centimeter accuracy an MSL value is only meaningful together
-    /// with the model that defined it — match the converter's geoid to your data source, or
-    /// avoid the ambiguity entirely by exchanging heights as HAE.
-    Msl,
+    /// "MSL" is not a single datum: EGM96 and EGM2008 undulations differ by decimeters over
+    /// much of the Earth (locally approaching a meter), which dwarfs RTK-grade measurement
+    /// noise. The model is therefore part of the frame, not a comment: every conversion checks
+    /// the tag against the converter's geoid and fails with
+    /// [`AltitudeError::GeoidModelMismatch`] instead of silently reinterpreting the value. If a
+    /// data source does not document which model its MSL uses, that is a data problem to
+    /// resolve — or avoid entirely by exchanging heights as `Hae`, which is model-free.
+    Msl(EgmModel),
     /// Ellipsoidal height above the WGS84 reference ellipsoid (HAE).
     Hae,
 }
@@ -71,9 +74,9 @@ impl AltitudeSample {
         Self::new(meters, VerticalFrame::Agl)
     }
 
-    /// Convenience constructor for an `MSL` sample in meters.
-    pub fn msl_m(meters: f64) -> Result<Self, AltitudeError> {
-        Self::new(meters, VerticalFrame::Msl)
+    /// Convenience constructor for an `MSL` sample in meters, referenced to `model`.
+    pub fn msl_m(meters: f64, model: EgmModel) -> Result<Self, AltitudeError> {
+        Self::new(meters, VerticalFrame::Msl(model))
     }
 
     /// Convenience constructor for an `HAE` sample in meters.
@@ -93,6 +96,21 @@ pub enum AltitudeError {
     InvalidCoordinate { name: &'static str, value: f64 },
     /// Invalid altitude/height argument.
     InvalidHeight { name: &'static str, value: f64 },
+    /// An `Msl`-tagged value names a different geoid model than the converter's geoid.
+    GeoidModelMismatch {
+        /// The model named by the value being converted.
+        value: EgmModel,
+        /// The model of the geoid this converter was built with.
+        converter: EgmModel,
+    },
+    /// The terrain dataset's orthometric heights are referenced to a different geoid model than
+    /// the converter's geoid, so `Agl` conversions would mix datums.
+    TerrainDatumMismatch {
+        /// The geoid model the terrain heights are referenced to.
+        terrain: EgmModel,
+        /// The model of the geoid this converter was built with.
+        geoid: EgmModel,
+    },
 }
 
 impl Display for AltitudeError {
@@ -106,6 +124,21 @@ impl Display for AltitudeError {
             AltitudeError::InvalidHeight { name, value } => {
                 write!(f, "{name} must be finite, got {value}")
             }
+            AltitudeError::GeoidModelMismatch { value, converter } => {
+                write!(
+                    f,
+                    "MSL value is referenced to {value:?} but the converter's geoid is \
+{converter:?}; convert it with a {value:?} converter, or re-tag the data after resolving its \
+true datum — the models differ by decimeters"
+                )
+            }
+            AltitudeError::TerrainDatumMismatch { terrain, geoid } => {
+                write!(
+                    f,
+                    "terrain heights are {terrain:?}-orthometric but the converter's geoid is \
+{geoid:?}; AGL conversions would mix datums — use a {terrain:?} geoid with this terrain dataset"
+                )
+            }
         }
     }
 }
@@ -117,6 +150,8 @@ impl Error for AltitudeError {
             AltitudeError::Terrain(err) => Some(err),
             AltitudeError::InvalidCoordinate { .. } => None,
             AltitudeError::InvalidHeight { .. } => None,
+            AltitudeError::GeoidModelMismatch { .. } => None,
+            AltitudeError::TerrainDatumMismatch { .. } => None,
         }
     }
 }
@@ -142,6 +177,10 @@ pub trait GeoidProvider {
         lon_deg: f64,
         interpolation: Interpolation,
     ) -> Result<f64, AltitudeError>;
+
+    /// The geoid model this provider implements. Defines what [`VerticalFrame::Msl(EgmModel::Egm96)`] means for
+    /// any converter built on it, and is checked against every `Msl`-tagged value.
+    fn model(&self) -> EgmModel;
 }
 
 /// Interface for terrain providers (`ground_msl` in `MSL = ground_msl + AGL`).
@@ -153,9 +192,18 @@ pub trait TerrainProvider {
         lon_deg: f64,
         interpolation: Interpolation,
     ) -> Result<f64, AltitudeError>;
+
+    /// The geoid model this dataset's orthometric heights are referenced to. `Agl` conversions
+    /// verify it against the converter's geoid so ground elevation and geoid separation are
+    /// never mixed across datums.
+    fn vertical_datum(&self) -> EgmModel;
 }
 
 impl GeoidProvider for EGM96 {
+    fn model(&self) -> EgmModel {
+        EgmModel::Egm96
+    }
+
     fn geoid_offset_m(
         &self,
         lat_deg: f64,
@@ -172,6 +220,10 @@ impl GeoidProvider for EGM96 {
 }
 
 impl GeoidProvider for EGM2008 {
+    fn model(&self) -> EgmModel {
+        EgmModel::Egm2008
+    }
+
     fn geoid_offset_m(
         &self,
         lat_deg: f64,
@@ -188,6 +240,11 @@ impl GeoidProvider for EGM2008 {
 }
 
 impl TerrainProvider for SrtmDataset {
+    /// SRTM heights are published relative to the EGM96 geoid (NASA/USGS product definition).
+    fn vertical_datum(&self) -> EgmModel {
+        EgmModel::Egm96
+    }
+
     fn terrain_msl_m(
         &self,
         lat_deg: f64,
@@ -232,7 +289,7 @@ where
     /// - terrain elevation (`MSL <-> AGL`)
     ///
     /// The geoid you pass **defines what `Msl` means** for every conversion this converter
-    /// performs (see [`VerticalFrame::Msl`]); the concrete models report which one they are via
+    /// performs (see [`VerticalFrame::Msl(EgmModel::Egm96)`]); the concrete models report which one they are via
     /// `EGM96::model()` / `EGM2008::model()`, so applications can record or assert provenance.
     pub fn new(geoid: &'a G, terrain: &'a T) -> Self {
         Self {
@@ -268,7 +325,11 @@ where
     }
 
     /// Returns all base reference terms used for frame conversion at `(lat_deg, lon_deg)`.
+    ///
+    /// `ground_hae_m` sums terrain elevation and geoid separation, so this errors with
+    /// [`AltitudeError::TerrainDatumMismatch`] if their datums differ.
     pub fn reference(&self, lat_deg: f64, lon_deg: f64) -> Result<TerrainReference, AltitudeError> {
+        self.require_datum_coherence()?;
         let geoid_offset_m = self.geoid_offset_m(lat_deg, lon_deg)?;
         let ground_msl_m = self.ground_msl_m(lat_deg, lon_deg)?;
         let ground_hae_m = ground_msl_m + geoid_offset_m;
@@ -285,6 +346,11 @@ where
     }
 
     /// Converts an altitude sample from one explicit vertical frame to another.
+    ///
+    /// Datum coherence is enforced, not assumed: an [`VerticalFrame::Msl(EgmModel::Egm96)`] tag naming a model
+    /// other than the converter's geoid, or an [`VerticalFrame::Agl`] conversion over a terrain
+    /// dataset referenced to a different model than the geoid, is an error — never a silent
+    /// decimeter-scale reinterpretation.
     pub fn convert_sample(
         &self,
         point: GeoPoint,
@@ -294,20 +360,51 @@ where
         if sample.frame == target_frame {
             return AltitudeSample::new(sample.meters, sample.frame);
         }
+        for frame in [sample.frame, target_frame] {
+            match frame {
+                VerticalFrame::Msl(model) => self.require_geoid_model(model)?,
+                VerticalFrame::Agl => self.require_datum_coherence()?,
+                VerticalFrame::Hae => {}
+            }
+        }
 
         let msl_m = match sample.frame {
             VerticalFrame::Agl => self.msl_from_agl(point.lat_deg, point.lon_deg, sample.meters)?,
-            VerticalFrame::Msl => sample.meters,
+            VerticalFrame::Msl(_) => sample.meters,
             VerticalFrame::Hae => self.msl_from_hae(point.lat_deg, point.lon_deg, sample.meters)?,
         };
 
         let meters = match target_frame {
             VerticalFrame::Agl => self.agl_from_msl(point.lat_deg, point.lon_deg, msl_m)?,
-            VerticalFrame::Msl => msl_m,
+            VerticalFrame::Msl(_) => msl_m,
             VerticalFrame::Hae => self.hae_from_msl(point.lat_deg, point.lon_deg, msl_m)?,
         };
 
         AltitudeSample::new(meters, target_frame)
+    }
+
+    /// The model that defines `Msl` for this converter: its geoid's.
+    pub fn geoid_model(&self) -> EgmModel {
+        self.geoid.model()
+    }
+
+    fn require_geoid_model(&self, value: EgmModel) -> Result<(), AltitudeError> {
+        let converter = self.geoid.model();
+        if value == converter {
+            Ok(())
+        } else {
+            Err(AltitudeError::GeoidModelMismatch { value, converter })
+        }
+    }
+
+    fn require_datum_coherence(&self) -> Result<(), AltitudeError> {
+        let terrain = self.terrain.vertical_datum();
+        let geoid = self.geoid.model();
+        if terrain == geoid {
+            Ok(())
+        } else {
+            Err(AltitudeError::TerrainDatumMismatch { terrain, geoid })
+        }
     }
 
     /// Convenience conversion API for scalar meter values when source/target frames are explicit.
@@ -432,6 +529,7 @@ where
         agl_m: f64,
     ) -> Result<f64, AltitudeError> {
         validate_height("agl_m", agl_m)?;
+        self.require_datum_coherence()?;
         let ground_msl_m = self.ground_msl_m(lat_deg, lon_deg)?;
         Ok(ground_msl_m + agl_m)
     }
@@ -444,6 +542,7 @@ where
         msl_m: f64,
     ) -> Result<f64, AltitudeError> {
         validate_height("msl_m", msl_m)?;
+        self.require_datum_coherence()?;
         let ground_msl_m = self.ground_msl_m(lat_deg, lon_deg)?;
         Ok(msl_m - ground_msl_m)
     }
@@ -507,20 +606,26 @@ mod tests {
     use crate::wgs84::AltType;
 
     use super::{
-        AltitudeConverter, AltitudeError, AltitudeSample, GeoPoint, GeoidProvider, Interpolation,
-        TerrainProvider, VerticalFrame,
+        AltitudeConverter, AltitudeError, AltitudeSample, EgmModel, GeoPoint, GeoidProvider,
+        Interpolation, TerrainProvider, VerticalFrame,
     };
 
     struct MockGeoid {
         value_m: f64,
+        model: EgmModel,
         interpolation_seen: Cell<Option<Interpolation>>,
         query_count: Cell<usize>,
     }
 
     impl MockGeoid {
         fn new(value_m: f64) -> Self {
+            Self::with_model(value_m, EgmModel::Egm96)
+        }
+
+        fn with_model(value_m: f64, model: EgmModel) -> Self {
             Self {
                 value_m,
+                model,
                 interpolation_seen: Cell::new(None),
                 query_count: Cell::new(0),
             }
@@ -532,6 +637,10 @@ mod tests {
     }
 
     impl GeoidProvider for MockGeoid {
+        fn model(&self) -> EgmModel {
+            self.model
+        }
+
         fn geoid_offset_m(
             &self,
             _lat_deg: f64,
@@ -546,14 +655,20 @@ mod tests {
 
     struct MockTerrain {
         value_m: f64,
+        datum: EgmModel,
         interpolation_seen: Cell<Option<Interpolation>>,
         query_count: Cell<usize>,
     }
 
     impl MockTerrain {
         fn new(value_m: f64) -> Self {
+            Self::with_datum(value_m, EgmModel::Egm96)
+        }
+
+        fn with_datum(value_m: f64, datum: EgmModel) -> Self {
             Self {
                 value_m,
+                datum,
                 interpolation_seen: Cell::new(None),
                 query_count: Cell::new(0),
             }
@@ -565,6 +680,10 @@ mod tests {
     }
 
     impl TerrainProvider for MockTerrain {
+        fn vertical_datum(&self) -> EgmModel {
+            self.datum
+        }
+
         fn terrain_msl_m(
             &self,
             _lat_deg: f64,
@@ -662,6 +781,107 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_msl_model_is_rejected_not_reinterpreted() {
+        // The failure this exists for: an EGM2008-referenced MSL value fed to an EGM96
+        // converter differs by decimeters — silently converting it would bury a systematic
+        // error 10-100x RTK measurement noise. It must refuse, in both directions.
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let err = converter
+            .convert_height_m(
+                point,
+                100.0,
+                VerticalFrame::Msl(EgmModel::Egm2008),
+                VerticalFrame::Hae,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AltitudeError::GeoidModelMismatch {
+                    value: EgmModel::Egm2008,
+                    converter: EgmModel::Egm96,
+                }
+            ),
+            "got {err:?}"
+        );
+
+        let err = converter
+            .convert_height_m(
+                point,
+                100.0,
+                VerticalFrame::Hae,
+                VerticalFrame::Msl(EgmModel::Egm2008),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AltitudeError::GeoidModelMismatch { .. }));
+
+        // The message must say what to do, not merely that it failed.
+        let text = err.to_string();
+        assert!(text.contains("Egm2008") && text.contains("Egm96"), "{text}");
+
+        // A correctly tagged value converts exactly as before.
+        let hae = converter
+            .convert_height_m(
+                point,
+                100.0,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+            )
+            .unwrap();
+        assert!((hae - 130.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn agl_refuses_to_mix_terrain_and_geoid_datums() {
+        // SRTM-class DEMs are EGM96-orthometric. Pairing one with an EGM2008 geoid makes every
+        // AGL<->HAE conversion sum heights from two different datums; that must be an error,
+        // not an answer. HAE<->MSL stays available — it never touches the terrain.
+        let geoid = MockGeoid::with_model(30.0, EgmModel::Egm2008);
+        let terrain = MockTerrain::new(120.0); // EGM96-referenced
+        let converter = AltitudeConverter::new(&geoid, &terrain);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let err = converter
+            .convert_height_m(point, 50.0, VerticalFrame::Agl, VerticalFrame::Hae)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AltitudeError::TerrainDatumMismatch {
+                    terrain: EgmModel::Egm96,
+                    geoid: EgmModel::Egm2008,
+                }
+            ),
+            "got {err:?}"
+        );
+        assert!(converter.agl_from_hae(10.0, 20.0, 200.0).is_err());
+        assert!(converter.reference(10.0, 20.0).is_err());
+
+        // Geoid-only conversions remain valid with this pairing.
+        let msl = converter
+            .convert_height_m(
+                point,
+                130.0,
+                VerticalFrame::Hae,
+                VerticalFrame::Msl(EgmModel::Egm2008),
+            )
+            .unwrap();
+        assert!((msl - 100.0).abs() < 1e-12);
+
+        // And a coherent EGM2008 pairing does full AGL conversions.
+        let terrain_08 = MockTerrain::with_datum(120.0, EgmModel::Egm2008);
+        let converter_08 = AltitudeConverter::new(&geoid, &terrain_08);
+        let hae = converter_08
+            .convert_height_m(point, 50.0, VerticalFrame::Agl, VerticalFrame::Hae)
+            .unwrap();
+        assert!((hae - 200.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn typed_conversion_matrix_is_consistent() {
         let geoid = MockGeoid::new(30.0);
         let terrain = MockTerrain::new(120.0);
@@ -670,13 +890,13 @@ mod tests {
 
         let agl = AltitudeSample::agl_m(50.0).unwrap();
         let msl = converter
-            .convert_sample(point, agl, VerticalFrame::Msl)
+            .convert_sample(point, agl, VerticalFrame::Msl(EgmModel::Egm96))
             .unwrap();
         let hae = converter
             .convert_sample(point, agl, VerticalFrame::Hae)
             .unwrap();
 
-        assert_eq!(msl.frame, VerticalFrame::Msl);
+        assert_eq!(msl.frame, VerticalFrame::Msl(EgmModel::Egm96));
         assert_eq!(hae.frame, VerticalFrame::Hae);
         assert!((msl.meters - 170.0).abs() < 1e-12);
         assert!((hae.meters - 200.0).abs() < 1e-12);
@@ -786,7 +1006,11 @@ mod tests {
         let converter = AltitudeConverter::new(&geoid, &terrain);
         let point = GeoPoint::new(10.0, 20.0).unwrap();
 
-        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        let frames = [
+            VerticalFrame::Agl,
+            VerticalFrame::Msl(EgmModel::Egm96),
+            VerticalFrame::Hae,
+        ];
         for frame in frames {
             let source_m = 250.0;
             let point_ecef = converter
@@ -813,13 +1037,18 @@ mod tests {
             .ecef_wgs84_from_height_m(point, 50.0, VerticalFrame::Agl)
             .unwrap();
         let sample = converter
-            .sample_from_ecef_wgs84(point_ecef, VerticalFrame::Msl)
+            .sample_from_ecef_wgs84(point_ecef, VerticalFrame::Msl(EgmModel::Egm96))
             .unwrap();
         let expected_msl = converter
-            .convert_height_m(point, 50.0, VerticalFrame::Agl, VerticalFrame::Msl)
+            .convert_height_m(
+                point,
+                50.0,
+                VerticalFrame::Agl,
+                VerticalFrame::Msl(EgmModel::Egm96),
+            )
             .unwrap();
 
-        assert_eq!(sample.frame, VerticalFrame::Msl);
+        assert_eq!(sample.frame, VerticalFrame::Msl(EgmModel::Egm96));
         assert!((sample.meters - expected_msl).abs() < 1e-9);
     }
 
@@ -830,7 +1059,11 @@ mod tests {
         let converter = AltitudeConverter::new(&geoid, &terrain);
         let point = GeoPoint::new(10.0, 20.0).unwrap();
 
-        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        let frames = [
+            VerticalFrame::Agl,
+            VerticalFrame::Msl(EgmModel::Egm96),
+            VerticalFrame::Hae,
+        ];
         for frame in frames {
             let via_sample = converter
                 .convert_sample(point, AltitudeSample::new(123.45, frame).unwrap(), frame)
@@ -873,18 +1106,22 @@ mod tests {
         let converter = AltitudeConverter::new(&geoid, &terrain);
         let point = GeoPoint::new(10.0, 20.0).unwrap();
 
-        let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+        let frames = [
+            VerticalFrame::Agl,
+            VerticalFrame::Msl(EgmModel::Egm96),
+            VerticalFrame::Hae,
+        ];
         for source in frames {
             for target in frames {
                 let input = 250.0;
                 let expected_msl = match source {
                     VerticalFrame::Agl => input + 120.0,
-                    VerticalFrame::Msl => input,
+                    VerticalFrame::Msl(_) => input,
                     VerticalFrame::Hae => input - 30.0,
                 };
                 let expected = match target {
                     VerticalFrame::Agl => expected_msl - 120.0,
-                    VerticalFrame::Msl => expected_msl,
+                    VerticalFrame::Msl(_) => expected_msl,
                     VerticalFrame::Hae => expected_msl + 30.0,
                 };
 
@@ -904,13 +1141,38 @@ mod tests {
         let point = GeoPoint::new(10.0, 20.0).unwrap();
         let cases = [
             (VerticalFrame::Agl, VerticalFrame::Agl, 0, 0),
-            (VerticalFrame::Agl, VerticalFrame::Msl, 0, 1),
+            (
+                VerticalFrame::Agl,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                0,
+                1,
+            ),
             (VerticalFrame::Agl, VerticalFrame::Hae, 1, 1),
-            (VerticalFrame::Msl, VerticalFrame::Agl, 0, 1),
-            (VerticalFrame::Msl, VerticalFrame::Msl, 0, 0),
-            (VerticalFrame::Msl, VerticalFrame::Hae, 1, 0),
+            (
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Agl,
+                0,
+                1,
+            ),
+            (
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Msl(EgmModel::Egm96),
+                0,
+                0,
+            ),
+            (
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+                1,
+                0,
+            ),
             (VerticalFrame::Hae, VerticalFrame::Agl, 1, 1),
-            (VerticalFrame::Hae, VerticalFrame::Msl, 1, 0),
+            (
+                VerticalFrame::Hae,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                1,
+                0,
+            ),
             (VerticalFrame::Hae, VerticalFrame::Hae, 0, 0),
         ];
 
@@ -945,10 +1207,10 @@ mod tests {
         // Simulate external caller bypassing constructors via public fields.
         let invalid_sample = AltitudeSample {
             meters: f64::NAN,
-            frame: VerticalFrame::Msl,
+            frame: VerticalFrame::Msl(EgmModel::Egm96),
         };
         let err = converter
-            .convert_sample(point, invalid_sample, VerticalFrame::Msl)
+            .convert_sample(point, invalid_sample, VerticalFrame::Msl(EgmModel::Egm96))
             .unwrap_err();
         assert!(matches!(
             err,
@@ -975,11 +1237,11 @@ mod tests {
             let point = GeoPoint::new(lat, lon).unwrap();
 
             let agl = AltitudeSample::agl_m(agl_m).unwrap();
-            let msl = converter.convert_sample(point, agl, VerticalFrame::Msl).unwrap();
+            let msl = converter.convert_sample(point, agl, VerticalFrame::Msl(EgmModel::Egm96)).unwrap();
             let hae = converter.convert_sample(point, msl, VerticalFrame::Hae).unwrap();
             let agl_back = converter.convert_sample(point, hae, VerticalFrame::Agl).unwrap();
 
-            prop_assert_eq!(msl.frame, VerticalFrame::Msl);
+            prop_assert_eq!(msl.frame, VerticalFrame::Msl(EgmModel::Egm96));
             prop_assert_eq!(hae.frame, VerticalFrame::Hae);
             prop_assert_eq!(agl_back.frame, VerticalFrame::Agl);
             prop_assert!((agl_back.meters - agl_m).abs() < 1e-9);
@@ -1009,12 +1271,12 @@ mod tests {
 
             let source_frame = match source {
                 0 => VerticalFrame::Agl,
-                1 => VerticalFrame::Msl,
+                1 => VerticalFrame::Msl(EgmModel::Egm96),
                 _ => VerticalFrame::Hae,
             };
             let target_frame = match target {
                 0 => VerticalFrame::Agl,
-                1 => VerticalFrame::Msl,
+                1 => VerticalFrame::Msl(EgmModel::Egm96),
                 _ => VerticalFrame::Hae,
             };
 
@@ -1052,12 +1314,12 @@ mod tests {
 
             let source_frame = match source {
                 0 => VerticalFrame::Agl,
-                1 => VerticalFrame::Msl,
+                1 => VerticalFrame::Msl(EgmModel::Egm96),
                 _ => VerticalFrame::Hae,
             };
             let mid_frame = match mid {
                 0 => VerticalFrame::Agl,
-                1 => VerticalFrame::Msl,
+                1 => VerticalFrame::Msl(EgmModel::Egm96),
                 _ => VerticalFrame::Hae,
             };
 
@@ -1094,7 +1356,7 @@ mod tests {
 
             let frame = match frame_idx {
                 0 => VerticalFrame::Agl,
-                1 => VerticalFrame::Msl,
+                1 => VerticalFrame::Msl(EgmModel::Egm96),
                 _ => VerticalFrame::Hae,
             };
 

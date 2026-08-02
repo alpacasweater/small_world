@@ -6,7 +6,8 @@
 //!
 //! # Frame contract
 //! - `AGL`: meters above local terrain surface.
-//! - `MSL`: orthometric meters above geoid (mean sea level).
+//! - `MSL`: orthometric meters above a **named** geoid model (`Msl(EgmModel)`); model
+//!   mismatches are errors, never silent reinterpretation.
 //! - `HAE`: ellipsoidal meters above WGS84 ellipsoid.
 //! - `NED.d`: positive down.
 //! - `ENU.u`: positive up.

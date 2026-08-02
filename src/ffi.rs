@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::altitude::{AltitudeConverter, AltitudeError, GeoPoint, GeoidProvider, VerticalFrame};
-use crate::geoid::{EGM2008, EGM96};
+use crate::geoid::{EgmModel, EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, VoidPolicy};
 use crate::wgs84::{AltType, Ecef, Enu, Lla, Ned};
@@ -42,10 +42,16 @@ fn to_interpolation(value: SwInterpolation) -> Result<Interpolation, SwStatus> {
     }
 }
 
-fn to_vertical_frame(value: SwVerticalFrame) -> Result<VerticalFrame, SwStatus> {
+/// Maps the C vertical frame onto the Rust one. The C ABI's `MSL` is untagged; it has always
+/// meant "the geoid this converter was created with", so it resolves to `msl_model` — the
+/// converter's own model — which makes a model mismatch impossible to express from C.
+fn to_vertical_frame(
+    value: SwVerticalFrame,
+    msl_model: EgmModel,
+) -> Result<VerticalFrame, SwStatus> {
     match value {
         SwVerticalFrame::Agl => Ok(VerticalFrame::Agl),
-        SwVerticalFrame::Msl => Ok(VerticalFrame::Msl),
+        SwVerticalFrame::Msl => Ok(VerticalFrame::Msl(msl_model)),
         SwVerticalFrame::Hae => Ok(VerticalFrame::Hae),
     }
 }
@@ -164,6 +170,9 @@ fn status_from_altitude_error(err: &AltitudeError) -> SwStatus {
             SwStatus::InvalidArgument
         }
         AltitudeError::Geoid(_) | AltitudeError::Terrain(_) => SwStatus::QueryError,
+        AltitudeError::GeoidModelMismatch { .. } | AltitudeError::TerrainDatumMismatch { .. } => {
+            SwStatus::InvalidArgument
+        }
     }
 }
 
@@ -173,6 +182,13 @@ enum GeoidDataset {
 }
 
 impl GeoidProvider for GeoidDataset {
+    fn model(&self) -> EgmModel {
+        match self {
+            GeoidDataset::Egm96(_) => EgmModel::Egm96,
+            GeoidDataset::Egm2008(_) => EgmModel::Egm2008,
+        }
+    }
+
     fn geoid_offset_m(
         &self,
         lat_deg: f64,
@@ -518,14 +534,6 @@ pub unsafe extern "C" fn sw_converter_convert_height_m(
     }
     clear_last_error();
 
-    let source_frame = match to_vertical_frame(source_frame) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let target_frame = match to_vertical_frame(target_frame) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
     let point = match point_from_components(lat_deg, lon_deg) {
         Ok(value) => value,
         Err(status) => return status,
@@ -538,6 +546,15 @@ pub unsafe extern "C" fn sw_converter_convert_height_m(
         Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
     };
     let converter = core.altitude_converter();
+    let msl_model = converter.geoid_model();
+    let source_frame = match to_vertical_frame(source_frame, msl_model) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let target_frame = match to_vertical_frame(target_frame, msl_model) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
     let result = match converter.convert_height_m(point, meters, source_frame, target_frame) {
         Ok(value) => value,
         Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),
@@ -620,10 +637,6 @@ pub unsafe extern "C" fn sw_converter_lla_wgs84_from_height_m(
     }
     clear_last_error();
 
-    let source_frame = match to_vertical_frame(source_frame) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
     let point = match point_from_components(lat_deg, lon_deg) {
         Ok(value) => value,
         Err(status) => return status,
@@ -636,6 +649,11 @@ pub unsafe extern "C" fn sw_converter_lla_wgs84_from_height_m(
         Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
     };
     let converter = core.altitude_converter();
+    let msl_model = converter.geoid_model();
+    let source_frame = match to_vertical_frame(source_frame, msl_model) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
     let lla = match converter.lla_wgs84_from_height_m(point, meters, source_frame) {
         Ok(value) => value,
         Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),
@@ -670,10 +688,6 @@ pub unsafe extern "C" fn sw_converter_ecef_wgs84_from_height_m(
     }
     clear_last_error();
 
-    let source_frame = match to_vertical_frame(source_frame) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
     let point = match point_from_components(lat_deg, lon_deg) {
         Ok(value) => value,
         Err(status) => return status,
@@ -686,6 +700,11 @@ pub unsafe extern "C" fn sw_converter_ecef_wgs84_from_height_m(
         Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
     };
     let converter = core.altitude_converter();
+    let msl_model = converter.geoid_model();
+    let source_frame = match to_vertical_frame(source_frame, msl_model) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
     let point_ecef_wgs84 = match converter.ecef_wgs84_from_height_m(point, meters, source_frame) {
         Ok(value) => value,
         Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),
@@ -722,10 +741,6 @@ pub unsafe extern "C" fn sw_converter_height_from_ecef_wgs84_m(
         Ok(value) => value,
         Err(status) => return status,
     };
-    let target_frame = match to_vertical_frame(target_frame) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
 
     // SAFETY: null checked above.
     let handle = unsafe { &*converter };
@@ -734,6 +749,11 @@ pub unsafe extern "C" fn sw_converter_height_from_ecef_wgs84_m(
         Err(_) => return fail(SwStatus::InternalError, "converter lock poisoned"),
     };
     let converter = core.altitude_converter();
+    let msl_model = converter.geoid_model();
+    let target_frame = match to_vertical_frame(target_frame, msl_model) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
     let meters = match converter.height_from_ecef_wgs84_m(point_ecef_wgs84, target_frame) {
         Ok(value) => value,
         Err(err) => return fail(status_from_altitude_error(&err), &err.to_string()),

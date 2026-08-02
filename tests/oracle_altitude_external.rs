@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
+use small_world::altitude::{AltitudeConverter, EgmModel, GeoPoint, VerticalFrame};
 use small_world::geoid::EGM96;
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
@@ -234,7 +234,11 @@ fn altitude_conversions_match_proj_and_gdal_oracles() -> Result<(), String> {
     let mut max_conversion_err = 0.0_f64;
     let mut max_lla_alt_err = 0.0_f64;
 
-    let frames = [VerticalFrame::Agl, VerticalFrame::Msl, VerticalFrame::Hae];
+    let frames = [
+        VerticalFrame::Agl,
+        VerticalFrame::Msl(EgmModel::Egm96),
+        VerticalFrame::Hae,
+    ];
     for (idx, (lat_deg, lon_deg)) in points.iter().enumerate() {
         let point = GeoPoint::new(*lat_deg, *lon_deg).map_err(|err| err.to_string())?;
         let ground_msl_m = query_gdal_height(&hgt_path, *lat_deg, *lon_deg, use_bilinear)?;
@@ -245,12 +249,12 @@ fn altitude_conversions_match_proj_and_gdal_oracles() -> Result<(), String> {
             for target in frames {
                 let expected_msl = match source {
                     VerticalFrame::Agl => ground_msl_m + input_m,
-                    VerticalFrame::Msl => input_m,
+                    VerticalFrame::Msl(_) => input_m,
                     VerticalFrame::Hae => input_m - geoid_offset_m,
                 };
                 let expected = match target {
                     VerticalFrame::Agl => expected_msl - ground_msl_m,
-                    VerticalFrame::Msl => expected_msl,
+                    VerticalFrame::Msl(_) => expected_msl,
                     VerticalFrame::Hae => expected_msl + geoid_offset_m,
                 };
 
@@ -271,7 +275,7 @@ fn altitude_conversions_match_proj_and_gdal_oracles() -> Result<(), String> {
 
             let expected_hae = match source {
                 VerticalFrame::Agl => ground_msl_m + input_m + geoid_offset_m,
-                VerticalFrame::Msl => input_m + geoid_offset_m,
+                VerticalFrame::Msl(_) => input_m + geoid_offset_m,
                 VerticalFrame::Hae => input_m,
             };
             let lla = converter
