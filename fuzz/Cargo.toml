@@ -1,3 +1,8 @@
+# Standalone workspace: the root manifest excludes this package (fuzz targets are
+# nightly-only and must not affect the publishable crate's lockfile/MSRV), so this
+# empty table stops cargo from resolving into the parent workspace.
+[workspace]
+
 [package]
 name = "small_world-fuzz"
 version = "0.0.0"
