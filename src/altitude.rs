@@ -103,6 +103,14 @@ pub enum AltitudeError {
         /// The model of the geoid this converter was built with.
         converter: EgmModel,
     },
+    /// A geoid re-reference ([`GeoidShift`]) was given a sample that is not `Msl` in its
+    /// source model.
+    ExpectedMslSample {
+        /// The model the shift converts from.
+        expected: EgmModel,
+        /// The frame the sample actually carried.
+        found: VerticalFrame,
+    },
     /// The terrain dataset's orthometric heights are referenced to a different geoid model than
     /// the converter's geoid, so `Agl` conversions would mix datums.
     TerrainDatumMismatch {
@@ -128,8 +136,15 @@ impl Display for AltitudeError {
                 write!(
                     f,
                     "MSL value is referenced to {value:?} but the converter's geoid is \
-{converter:?}; convert it with a {value:?} converter, or re-tag the data after resolving its \
-true datum — the models differ by decimeters"
+{converter:?}; re-reference it first with GeoidShift ({value:?} -> {converter:?}), or convert \
+it with a {value:?} converter — the models differ by decimeters"
+                )
+            }
+            AltitudeError::ExpectedMslSample { expected, found } => {
+                write!(
+                    f,
+                    "geoid re-referencing needs an MSL sample referenced to {expected:?}, got \
+{found:?}; convert to MSL in the source model first"
                 )
             }
             AltitudeError::TerrainDatumMismatch { terrain, geoid } => {
@@ -151,6 +166,7 @@ impl Error for AltitudeError {
             AltitudeError::InvalidCoordinate { .. } => None,
             AltitudeError::InvalidHeight { .. } => None,
             AltitudeError::GeoidModelMismatch { .. } => None,
+            AltitudeError::ExpectedMslSample { .. } => None,
             AltitudeError::TerrainDatumMismatch { .. } => None,
         }
     }
@@ -258,6 +274,112 @@ impl TerrainProvider for SrtmDataset {
 
 /// Terrain/geoid reference terms for a geodetic point.
 #[derive(Clone, Copy, Debug)]
+/// Re-references orthometric heights between geoid models — the explicit bridge for systems
+/// where one data source is EGM96-referenced and another EGM2008-referenced.
+///
+/// The ellipsoidal height is the invariant pivot: `MSL_to = MSL_from + (N_from − N_to)`, where
+/// `N` is each model's undulation at the query point. The shift is decimeter-scale over most of
+/// the Earth (locally approaching a meter), which is exactly the error silently absorbed when
+/// mixed-source systems ignore the model.
+///
+/// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use small_world::altitude::{EgmModel, GeoPoint, GeoidShift};
+/// use small_world::geoid::{EGM2008, EGM96};
+///
+/// let egm96 = EGM96::new(std::path::Path::new("data/WW15MGH.DAC"))?;
+/// let egm2008 = EGM2008::new(std::path::Path::new("data/EGM2008_2_5.DAC"))?;
+///
+/// let to_2008 = GeoidShift::new(&egm96, &egm2008);
+/// let p = GeoPoint::new(51.4779, -0.0015)?;
+/// let msl_2008 = to_2008.convert_height_m(p, 46.0)?; // 46 m EGM96-MSL, re-referenced
+/// # Ok(())
+/// # }
+/// ```
+pub struct GeoidShift<'a, F, T>
+where
+    F: GeoidProvider + ?Sized,
+    T: GeoidProvider + ?Sized,
+{
+    from: &'a F,
+    to: &'a T,
+    interpolation: Interpolation,
+}
+
+impl<'a, F, T> GeoidShift<'a, F, T>
+where
+    F: GeoidProvider + ?Sized,
+    T: GeoidProvider + ?Sized,
+{
+    /// Creates a re-referencer from `from`'s model to `to`'s model.
+    ///
+    /// Equal models are permitted and act as an exact identity (no grid queries), so generic
+    /// code need not special-case the degenerate direction.
+    pub fn new(from: &'a F, to: &'a T) -> Self {
+        Self {
+            from,
+            to,
+            interpolation: Interpolation::Bilinear,
+        }
+    }
+
+    /// Sets the interpolation used for both models' undulation lookups.
+    pub fn with_interpolation(mut self, interpolation: Interpolation) -> Self {
+        self.interpolation = interpolation;
+        self
+    }
+
+    /// The model this shift converts from.
+    pub fn from_model(&self) -> EgmModel {
+        self.from.model()
+    }
+
+    /// The model this shift converts to.
+    pub fn to_model(&self) -> EgmModel {
+        self.to.model()
+    }
+
+    /// `N_from − N_to` at `point` in meters: the amount an MSL height grows when re-referenced.
+    /// Exactly zero when the models are equal.
+    pub fn shift_m(&self, point: GeoPoint) -> Result<f64, AltitudeError> {
+        if self.from.model() == self.to.model() {
+            return Ok(0.0);
+        }
+        let n_from = self
+            .from
+            .geoid_offset_m(point.lat_deg, point.lon_deg, self.interpolation)?;
+        let n_to = self
+            .to
+            .geoid_offset_m(point.lat_deg, point.lon_deg, self.interpolation)?;
+        Ok(n_from - n_to)
+    }
+
+    /// Re-references an MSL height in meters from the source model to the target model.
+    pub fn convert_height_m(&self, point: GeoPoint, msl_m: f64) -> Result<f64, AltitudeError> {
+        validate_height("msl_m", msl_m)?;
+        Ok(msl_m + self.shift_m(point)?)
+    }
+
+    /// Typed variant: requires the sample to be `Msl` in the source model and returns it `Msl`
+    /// in the target model, so the tag moves with the value.
+    pub fn convert_sample(
+        &self,
+        point: GeoPoint,
+        sample: AltitudeSample,
+    ) -> Result<AltitudeSample, AltitudeError> {
+        if sample.frame != VerticalFrame::Msl(self.from.model()) {
+            return Err(AltitudeError::ExpectedMslSample {
+                expected: self.from.model(),
+                found: sample.frame,
+            });
+        }
+        AltitudeSample::new(
+            self.convert_height_m(point, sample.meters)?,
+            VerticalFrame::Msl(self.to.model()),
+        )
+    }
+}
+
 pub struct TerrainReference {
     /// Geoid separation (`N`) where `HAE = MSL + N`.
     pub geoid_offset_m: f64,
@@ -607,7 +729,7 @@ mod tests {
 
     use super::{
         AltitudeConverter, AltitudeError, AltitudeSample, EgmModel, GeoPoint, GeoidProvider,
-        Interpolation, TerrainProvider, VerticalFrame,
+        GeoidShift, Interpolation, TerrainProvider, VerticalFrame,
     };
 
     struct MockGeoid {
@@ -778,6 +900,98 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn geoid_shift_rereferences_between_models() {
+        // N96 = 30, N08 = 10 => an EGM96-MSL height gains N96 - N08 = +20 m when re-referenced
+        // to EGM2008 (HAE is the invariant pivot).
+        let egm96 = MockGeoid::with_model(30.0, EgmModel::Egm96);
+        let egm2008 = MockGeoid::with_model(10.0, EgmModel::Egm2008);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let to_2008 = GeoidShift::new(&egm96, &egm2008);
+        assert_eq!(to_2008.from_model(), EgmModel::Egm96);
+        assert_eq!(to_2008.to_model(), EgmModel::Egm2008);
+        assert!((to_2008.shift_m(point).unwrap() - 20.0).abs() < 1e-12);
+        assert!((to_2008.convert_height_m(point, 100.0).unwrap() - 120.0).abs() < 1e-12);
+
+        // Typed path: the tag moves with the value.
+        let s96 = AltitudeSample::msl_m(100.0, EgmModel::Egm96).unwrap();
+        let s08 = to_2008.convert_sample(point, s96).unwrap();
+        assert_eq!(s08.frame, VerticalFrame::Msl(EgmModel::Egm2008));
+        assert!((s08.meters - 120.0).abs() < 1e-12);
+
+        // Round trip through the reverse shift is exact.
+        let to_96 = GeoidShift::new(&egm2008, &egm96);
+        let back = to_96.convert_sample(point, s08).unwrap();
+        assert_eq!(back.frame, VerticalFrame::Msl(EgmModel::Egm96));
+        assert!((back.meters - 100.0).abs() < 1e-12);
+
+        // Mistagged and non-MSL samples are refused, with the fix in the message.
+        let err = to_2008.convert_sample(point, s08).unwrap_err();
+        assert!(matches!(
+            err,
+            AltitudeError::ExpectedMslSample {
+                expected: EgmModel::Egm96,
+                found: VerticalFrame::Msl(EgmModel::Egm2008),
+            }
+        ));
+        let hae = AltitudeSample::hae_m(100.0).unwrap();
+        assert!(to_2008.convert_sample(point, hae).is_err());
+    }
+
+    #[test]
+    fn geoid_shift_between_equal_models_is_an_exact_identity() {
+        // Equal models short-circuit: no undulation queries, bit-identical value out.
+        let a = MockGeoid::with_model(30.0, EgmModel::Egm96);
+        let b = MockGeoid::with_model(30.0, EgmModel::Egm96);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let shift = GeoidShift::new(&a, &b);
+        assert_eq!(shift.shift_m(point).unwrap(), 0.0);
+        assert_eq!(shift.convert_height_m(point, 123.456).unwrap(), 123.456);
+        assert_eq!(a.query_count(), 0, "identity must not query the grids");
+        assert_eq!(b.query_count(), 0);
+    }
+
+    #[test]
+    fn geoid_shift_composes_coherently_with_converters() {
+        // The property that makes the shift correct: HAE is invariant. Converting EGM96-MSL to
+        // HAE directly must equal re-referencing to EGM2008-MSL first and converting via an
+        // EGM2008 converter.
+        let egm96 = MockGeoid::with_model(30.0, EgmModel::Egm96);
+        let egm2008 = MockGeoid::with_model(10.0, EgmModel::Egm2008);
+        let terrain96 = MockTerrain::new(120.0);
+        let terrain08 = MockTerrain::with_datum(120.0, EgmModel::Egm2008);
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let converter96 = AltitudeConverter::new(&egm96, &terrain96);
+        let converter08 = AltitudeConverter::new(&egm2008, &terrain08);
+        let to_2008 = GeoidShift::new(&egm96, &egm2008);
+
+        let msl96 = 100.0;
+        let hae_direct = converter96
+            .convert_height_m(
+                point,
+                msl96,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+            )
+            .unwrap();
+        let msl08 = to_2008.convert_height_m(point, msl96).unwrap();
+        let hae_via_shift = converter08
+            .convert_height_m(
+                point,
+                msl08,
+                VerticalFrame::Msl(EgmModel::Egm2008),
+                VerticalFrame::Hae,
+            )
+            .unwrap();
+        assert!(
+            (hae_direct - hae_via_shift).abs() < 1e-12,
+            "{hae_direct} vs {hae_via_shift}"
+        );
     }
 
     #[test]

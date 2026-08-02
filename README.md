@@ -63,6 +63,15 @@ the model is part of the type, not a comment:
 - `AGL` conversions verify the **terrain dataset's vertical datum** against the geoid
   (`TerrainDatumMismatch` otherwise): SRTM heights are EGM96-referenced, so pairing them with
   an EGM2008 geoid would mix datums inside a single sum.
+- **Mixed sources are expected, so the bridge is explicit:** `GeoidShift` re-references an MSL
+  height between models (`MSL_to = MSL_from + N_from − N_to`, with HAE as the invariant pivot),
+  and its typed path rewrites the tag with the value:
+
+  ```rust,ignore
+  let to_2008 = GeoidShift::new(&egm96, &egm2008);
+  let sample_2008 = to_2008.convert_sample(point, sample_egm96)?; // now Msl(Egm2008)
+  ```
+
 - The untagged pairwise helpers (`hae_from_msl`, …) operate in the converter's own model —
   `converter.geoid_model()` reports which that is.
 - If a data source doesn't document its MSL model (many GNSS receivers use built-in, often
@@ -145,6 +154,10 @@ Pairwise altitude helpers (all take `(lat_deg, lon_deg, meters) -> meters`):
 - `hae_from_msl`, `msl_from_hae`
 - `msl_from_agl`, `agl_from_msl`
 - `hae_from_agl`, `agl_from_hae`
+
+Geoid re-referencing (`GeoidShift`, for mixed EGM96/EGM2008 sources):
+- `shift_m(point)` — `N_from − N_to` in meters
+- `convert_height_m(point, msl_m)`, `convert_sample(point, sample)` — tag checked and rewritten
 
 Reference access:
 - `geoid_offset_m(lat_deg, lon_deg)` — geoid separation N in meters

@@ -170,9 +170,9 @@ fn status_from_altitude_error(err: &AltitudeError) -> SwStatus {
             SwStatus::InvalidArgument
         }
         AltitudeError::Geoid(_) | AltitudeError::Terrain(_) => SwStatus::QueryError,
-        AltitudeError::GeoidModelMismatch { .. } | AltitudeError::TerrainDatumMismatch { .. } => {
-            SwStatus::InvalidArgument
-        }
+        AltitudeError::GeoidModelMismatch { .. }
+        | AltitudeError::ExpectedMslSample { .. }
+        | AltitudeError::TerrainDatumMismatch { .. } => SwStatus::InvalidArgument,
     }
 }
 

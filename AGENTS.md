@@ -57,7 +57,10 @@ Compatibility helpers (keep while needed by existing callsites):
   Converters reject `Msl` tags that differ from their geoid (`GeoidModelMismatch`) and `AGL`
   conversions over a terrain datum that differs from the geoid (`TerrainDatumMismatch`).
   Never add an untagged MSL path; the C ABI's untagged `SW_FRAME_MSL` resolves to the
-  converter's own model, which keeps it unambiguous by construction.
+  converter's own model, which keeps it unambiguous by construction. Cross-model movement is
+  explicit via `GeoidShift` (HAE-invariant: `MSL_to = MSL_from + N_from − N_to`); it is
+  Rust-only for now — a C ABI surface for it needs a two-handle design (lock ordering!) and
+  should be its own reviewed addition.
 - `HAE`: ellipsoidal height above WGS84 ellipsoid.
 - `ECEF`: Earth-Centered, Earth-Fixed Cartesian meters on WGS84 axes.
 - `NED`: `d` is positive down.
