@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::egm96::EGM96;
+use small_world::geoid::EGM96;
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
 

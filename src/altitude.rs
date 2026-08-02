@@ -7,7 +7,7 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use crate::egm96::{EgmError, EGM2008, EGM96};
+use crate::geoid::{EgmError, EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, TerrainError};
 use crate::wgs84::{AltType, Ecef, Lla};
@@ -20,6 +20,13 @@ pub enum VerticalFrame {
     /// Height above local terrain surface from the DEM (`terrain_msl`).
     Agl,
     /// Orthometric height above mean sea level (MSL).
+    ///
+    /// **MSL is model-relative.** "Mean sea level" here means the geoid the converter was built
+    /// with, and different geoid models disagree: EGM96 and EGM2008 undulations differ by
+    /// decimeters over much of the Earth (locally approaching a meter). That dwarfs RTK-grade
+    /// measurement noise, so at centimeter accuracy an MSL value is only meaningful together
+    /// with the model that defined it — match the converter's geoid to your data source, or
+    /// avoid the ambiguity entirely by exchanging heights as HAE.
     Msl,
     /// Ellipsoidal height above the WGS84 reference ellipsoid (HAE).
     Hae,
@@ -223,6 +230,10 @@ where
     /// Creates a converter that combines:
     /// - geoid separation (`MSL <-> HAE`)
     /// - terrain elevation (`MSL <-> AGL`)
+    ///
+    /// The geoid you pass **defines what `Msl` means** for every conversion this converter
+    /// performs (see [`VerticalFrame::Msl`]); the concrete models report which one they are via
+    /// `EGM96::model()` / `EGM2008::model()`, so applications can record or assert provenance.
     pub fn new(geoid: &'a G, terrain: &'a T) -> Self {
         Self {
             geoid,

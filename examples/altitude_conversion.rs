@@ -5,7 +5,7 @@ use std::time::Instant;
 use small_world::altitude::{
     AltitudeConverter, AltitudeError, AltitudeSample, GeoPoint, VerticalFrame,
 };
-use small_world::egm96::{EGM2008, EGM96};
+use small_world::geoid::{EGM2008, EGM96};
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
 

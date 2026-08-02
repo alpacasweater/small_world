@@ -1,11 +1,11 @@
 //! EGM geoid grid readers and interpolation for EGM96/EGM2008 datasets.
 
-use std::cell::RefCell;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 
@@ -161,8 +161,10 @@ impl From<io::Error> for EgmError {
 #[derive(Debug)]
 pub struct EgmGrid {
     // `None` once the grid has been fully materialized in memory (e.g. via `from_bytes`); in
-    // that mode `read_geoid_value` never touches the filesystem.
-    data_file: Option<RefCell<File>>,
+    // that mode `read_geoid_value` never touches the filesystem. A `Mutex` (not `RefCell`) so
+    // the grid types are `Sync` and can be shared across threads or stored in ECS resources;
+    // lock poisoning is ignored because the guarded state is only a seek cursor.
+    data_file: Option<Mutex<File>>,
     geoid: Vec<f64>,
     model: EgmModel,
     format: GridFormat,
@@ -191,7 +193,7 @@ impl EgmGrid {
         let lon_step_deg = 360.0 / lon_bins as f64;
 
         Ok(Self {
-            data_file: Some(RefCell::new(file)),
+            data_file: Some(Mutex::new(file)),
             geoid: Vec::new(),
             model,
             format,
@@ -259,7 +261,7 @@ impl EgmGrid {
             // No file handle means the grid was built fully in memory already.
             return Ok(());
         };
-        let mut file = data_file.borrow_mut();
+        let mut file = data_file.lock().unwrap_or_else(PoisonError::into_inner);
         file.seek(SeekFrom::Start(0))?;
 
         let geoid = read_grid_values(
@@ -300,7 +302,7 @@ impl EgmGrid {
                 "geoid grid has no backing file and was not preloaded",
             )));
         };
-        let mut file = data_file.borrow_mut();
+        let mut file = data_file.lock().unwrap_or_else(PoisonError::into_inner);
         match self.format {
             GridFormat::Egm96I16Be => {
                 file.seek(SeekFrom::Start((index * 2) as u64))?;
@@ -536,6 +538,12 @@ impl EGM96 {
         })
     }
 
+    /// The geoid model this grid implements — provenance for MSL values derived through it
+    /// (see `crate::altitude::VerticalFrame::Msl` on why that matters at centimeter accuracy).
+    pub fn model(&self) -> EgmModel {
+        self.inner.model()
+    }
+
     /// Builds the EGM96 geoid from the grid embedded in the binary at compile time — no runtime
     /// data path or download step. Adds ~2 MiB to the binary.
     ///
@@ -595,6 +603,11 @@ impl EGM2008 {
         Ok(Self {
             inner: EgmGrid::egm2008(path)?,
         })
+    }
+
+    /// The geoid model this grid implements — provenance for MSL values derived through it.
+    pub fn model(&self) -> EgmModel {
+        self.inner.model()
     }
 
     /// Builds a fully in-memory EGM2008 geoid from raw grid bytes (the same byte layout as the
@@ -708,6 +721,17 @@ mod tests {
                 "in-memory vs file geoid mismatch at ({lat}, {lon}): {memory} vs {file}"
             );
         }
+    }
+
+    #[test]
+    fn geoid_types_are_send_and_sync() {
+        // Locked in at compile time: geoids are shared across threads in exactly the systems
+        // this crate targets (robotics processes, ECS resources). The file-backed mode uses a
+        // Mutex internally, so this holds for every construction path, not just from_bytes.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<super::EGM96>();
+        assert_send_sync::<super::EGM2008>();
+        assert_send_sync::<super::EgmGrid>();
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::altitude::{AltitudeConverter, AltitudeError, GeoPoint, GeoidProvider, VerticalFrame};
-use crate::egm96::{EGM2008, EGM96};
+use crate::geoid::{EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, VoidPolicy};
 use crate::wgs84::{AltType, Ecef, Enu, Lla, Ned};

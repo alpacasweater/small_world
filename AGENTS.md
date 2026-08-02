@@ -111,7 +111,7 @@ Current public `sw_*` functions (authoritative: `include/small_world.h`):
 - `src/altitude.rs`: frame conversion logic, converter entry points, altitude sample handling
 - `src/wgs84.rs`: LLA/ECEF/NED/ENU types and transforms
 - `src/terrain.rs`: HGT tile loading, interpolation, void policy, caching
-- `src/egm96.rs`: geoid grid readers and interpolation
+- `src/geoid.rs`: geoid grid readers and interpolation
 - `src/height.rs`: interpolation options and height wrappers
 - `src/lib.rs`: public exports
 - `src/ffi.rs`: C ABI bridge for C/C++ consumers

@@ -1,4 +1,4 @@
-use small_world::egm96::{EGM2008, EGM96};
+use small_world::geoid::{EGM2008, EGM96};
 use std::env;
 use std::path::Path;
 use std::time::Instant;

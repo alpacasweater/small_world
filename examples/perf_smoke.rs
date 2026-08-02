@@ -7,11 +7,11 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::egm96::EGM96;
 use small_world::ffi::{
     sw_converter_convert_height_m, sw_converter_create, sw_converter_destroy,
     sw_converter_options_default, SwConverterHandle, SwConverterOptions, SwStatus, SwVerticalFrame,
 };
+use small_world::geoid::EGM96;
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
 use small_world::wgs84::{AltType, Lla, Ned};

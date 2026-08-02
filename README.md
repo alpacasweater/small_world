@@ -50,6 +50,20 @@ Global absolute frames:
 - `LLA`: geodetic latitude/longitude degrees plus WGS84 `HAE` meters.
 - `ECEF`: Earth-Centered, Earth-Fixed Cartesian meters on WGS84 axes.
 
+### Which MSL? (EGM96 vs EGM2008)
+
+"MSL" is not a single datum: an orthometric height is relative to a specific **geoid model**,
+and the two models this crate supports disagree by decimeters over much of the Earth (locally
+approaching a meter). At RTK/centimeter accuracy that disagreement *is* your error budget:
+
+- The geoid you build the converter with **defines what `Msl` means** for that converter.
+  Match it to the model your data source actually uses — many GNSS receivers report MSL
+  against a built-in (often coarse, EGM96-derived) geoid table.
+- When you control the interface, exchange heights as **HAE** and convert to MSL only at the
+  presentation edge; HAE is model-free.
+- `EGM96::model()` / `EGM2008::model()` report provenance, so it can be logged or asserted
+  instead of assumed.
+
 ## Quick start
 
 > Frame-only conversions (`Lla`, `Ecef`, `Ned`, `Enu`) need **no data files**.
@@ -96,7 +110,7 @@ cargo run --example minimal_frame_conversion
 
 ```rust
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::egm96::EGM96;
+use small_world::geoid::EGM96;
 use small_world::terrain::SrtmDataset;
 
 let geoid = EGM96::embedded()?; // zero-setup (embedded-egm96 feature)

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::egm96::EGM96;
+use small_world::geoid::EGM96;
 use small_world::terrain::SrtmDataset;
 
 const AGL_INPUT_M: f64 = 120.0;

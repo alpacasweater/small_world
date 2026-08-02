@@ -3,7 +3,7 @@
 use std::fs;
 
 use libfuzzer_sys::fuzz_target;
-use small_world::egm96::{EgmModel, EGM2008, EGM96};
+use small_world::geoid::{EgmModel, EGM2008, EGM96};
 use tempfile::tempdir;
 
 const MAX_INPUT_BYTES: usize = 3 * 1024 * 1024;

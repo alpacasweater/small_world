@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 
 use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::egm96::{EGM2008, EGM96};
+use small_world::geoid::{EGM2008, EGM96};
 use small_world::terrain::SrtmDataset;
 use small_world::wgs84::{Enu, Ned};
 

@@ -16,7 +16,7 @@
 //! use std::path::Path;
 //!
 //! use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-//! use small_world::egm96::EGM96;
+//! use small_world::geoid::EGM96;
 //! use small_world::terrain::SrtmDataset;
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -58,10 +58,10 @@
 
 /// Frame-explicit altitude conversion API (`AGL`/`MSL`/`HAE`).
 pub mod altitude;
-/// EGM96/EGM2008 geoid grid readers and interpolation helpers.
-pub mod egm96;
 /// Stable C ABI for C/C++ integration.
 pub mod ffi;
+/// EGM96/EGM2008 geoid grid readers and interpolation helpers.
+pub mod geoid;
 /// Interpolation mode enum used by terrain/geoid queries.
 pub mod height;
 /// Low-level interpolation kernels.
