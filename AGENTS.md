@@ -31,7 +31,8 @@ Do not reintroduce without explicit design review:
 
 ### 3) Use explicit local/global structs
 In `src/wgs84.rs`, preserve explicit type names and accessor names:
-- `Lla` with `lat_deg()`, `lon_deg()`, `alt_m()`, `alt_type()`
+- `Lla` with `lat_deg()`, `lon_deg()`, `alt_m()` — the altitude is always WGS84 HAE
+  (there is no per-value vertical datum on `Lla`; MSL/AGL go through `AltitudeConverter`)
 - `Ecef` with `x()`, `y()`, `z()`
 - `Ned` with `n()`, `e()`, `d()`, `origin()`
 - `Enu` with `e()`, `n()`, `u()`, `origin()`
@@ -45,6 +46,16 @@ Expected primary methods:
 - `Enu::new(...)`, `Enu::to_lla()`, `Enu::to_ned(...)`
 - `Enu::try_new(...)` for checked construction
 - `Enu::to_ecef()`, `Enu::from_ecef(...)`
+
+### 4) Ergonomics contract (locked at 0.1)
+- Providers are accepted owned, borrowed, or shared: `&G`, `Arc<G>`, `Box<G>` implement
+  `GeoidProvider`/`TerrainProvider` via blanket impls. Do not add APIs that force one mode.
+- Geoid-only work uses `AltitudeConverter::geoid_only` (`NoTerrain`: `vertical_datum` is
+  `None`, terrain queries fail with `TerrainError::NotConfigured`).
+- Path-taking constructors accept `impl AsRef<Path>` / `impl Into<PathBuf>`, never bare `&Path`.
+- `small_world::prelude` re-exports the everyday surface; new everyday types join it.
+- `#![warn(missing_docs)]` is on and CI clippy runs `-D warnings`: every new public item ships
+  documented, with units and frame semantics stated.
 
 Compatibility helpers (keep while needed by existing callsites):
 - `enu_to_ned_between_origins(...)`

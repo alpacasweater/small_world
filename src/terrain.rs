@@ -16,37 +16,67 @@ const VOID_SAMPLE: i16 = -32768;
 const QUERY_EDGE_EPSILON: f64 = 1e-12;
 const DEFAULT_MAX_CACHED_TILES: usize = 64;
 
+/// Errors returned by terrain elevation queries.
 #[derive(Debug)]
 pub enum TerrainError {
+    /// No terrain dataset is configured (the converter was built with
+    /// [`crate::altitude::NoTerrain`]); `AGL` conversions need a DEM.
+    NotConfigured,
+    /// An I/O error occurred while reading a tile file.
     Io(io::Error),
+    /// The query latitude was non-finite or outside `[-90, 90]` degrees.
     InvalidLatitude(f64),
+    /// The query longitude was non-finite.
     InvalidLongitude(f64),
+    /// The `.hgt` tile covering the query point does not exist on disk.
     TileNotFound {
+        /// Full path of the missing tile file.
         path: PathBuf,
     },
+    /// The tile file size is not `2 * n * n` bytes for some grid side `n >= 2`.
     InvalidTileSize {
+        /// Full path of the malformed tile file.
         path: PathBuf,
+        /// Actual size of the tile file in bytes.
         bytes: usize,
     },
+    /// A void sample (`-32768`) was hit under [`VoidPolicy::Error`].
     VoidSample {
+        /// Integer-degree latitude floor identifying the tile (its south edge).
         tile_lat_floor_deg: i32,
+        /// Integer-degree longitude floor identifying the tile (its west edge).
         tile_lon_floor_deg: i32,
+        /// Grid row of the void sample (0 = north edge of the tile).
         row: usize,
+        /// Grid column of the void sample (0 = west edge of the tile).
         col: usize,
     },
+    /// A void sample was hit under [`VoidPolicy::NearestValid`] and no valid
+    /// sample was found within the configured search radius.
     VoidSampleNoNeighbor {
+        /// Integer-degree latitude floor identifying the tile (its south edge).
         tile_lat_floor_deg: i32,
+        /// Integer-degree longitude floor identifying the tile (its west edge).
         tile_lon_floor_deg: i32,
+        /// Grid row of the void sample (0 = north edge of the tile).
         row: usize,
+        /// Grid column of the void sample (0 = west edge of the tile).
         col: usize,
+        /// Search radius, in grid cells, that was exhausted without a valid sample.
         max_radius_cells: usize,
     },
+    /// The internal tile cache mutex was poisoned by a panic in another thread.
     CacheLockPoisoned,
 }
 
 impl Display for TerrainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            TerrainError::NotConfigured => write!(
+                f,
+                "no terrain dataset configured (converter built with NoTerrain); AGL \
+conversions need a DEM — use AltitudeConverter::new with an SrtmDataset"
+            ),
             TerrainError::Io(err) => write!(f, "I/O error: {err}"),
             TerrainError::InvalidLatitude(lat) => {
                 write!(f, "latitude must be finite and within [-90, 90], got {lat}")
@@ -98,6 +128,7 @@ impl Display for TerrainError {
 impl Error for TerrainError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            TerrainError::NotConfigured => None,
             TerrainError::Io(err) => Some(err),
             TerrainError::InvalidLatitude(_) => None,
             TerrainError::InvalidLongitude(_) => None,
@@ -125,7 +156,10 @@ pub enum VoidPolicy {
     /// Treat void samples as zero meters MSL.
     Zero,
     /// Search for the nearest valid sample in the same tile up to a radius.
-    NearestValid { max_radius_cells: usize },
+    NearestValid {
+        /// Maximum search radius in grid cells (Chebyshev distance) around the void sample.
+        max_radius_cells: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -303,34 +337,43 @@ impl SrtmDataset {
         self
     }
 
+    /// Root directory containing the `.hgt` tile files.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Drops all cached tiles; subsequent queries reload from disk.
     pub fn clear_cache(&self) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.clear();
         }
     }
 
+    /// Number of tiles currently held in the cache.
     pub fn cached_tile_count(&self) -> usize {
         self.cache.lock().map(|cache| cache.len()).unwrap_or(0)
     }
 
+    /// Total number of tile loads from disk over the dataset's lifetime,
+    /// including reloads after eviction or [`clear_cache`](Self::clear_cache).
     pub fn loaded_tile_count(&self) -> usize {
         self.loaded_tile_count.load(Ordering::Relaxed)
     }
 
+    /// Maximum number of tiles the cache may hold.
     pub fn cache_capacity(&self) -> usize {
         self.cache.lock().map(|cache| cache.capacity()).unwrap_or(0)
     }
 
+    /// Sets the cache capacity (clamped to at least 1), evicting
+    /// least-recently-used tiles if the new capacity is exceeded.
     pub fn set_max_cached_tiles(&self, max_tiles: usize) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.set_capacity(max_tiles);
         }
     }
 
+    /// The configured strategy for void (`-32768`) samples.
     pub fn void_policy(&self) -> VoidPolicy {
         self.void_policy
     }

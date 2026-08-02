@@ -1,3 +1,6 @@
+/// Catmull-Rom cubic interpolation between `values[1]` and `values[2]` at
+/// parameter `t` in `[0, 1]` (clamped), using `values[0]` and `values[3]` as
+/// outer support points.
 pub fn cubic_unit(t: f64, values: [f64; 4]) -> f64 {
     let t = t.clamp(0.0, 1.0);
     let t2 = t * t;
@@ -14,6 +17,9 @@ pub fn cubic_unit(t: f64, values: [f64; 4]) -> f64 {
         + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
 }
 
+/// Separable bicubic interpolation over a 4x4 `grid` at fractional offsets
+/// `(tx, ty)` within the central cell: [`cubic_unit`] along each row in `tx`,
+/// then once across the row results in `ty`.
 pub fn bicubic_unit(tx: f64, ty: f64, grid: [[f64; 4]; 4]) -> f64 {
     let mut rows = [0.0_f64; 4];
     for row in 0..4 {

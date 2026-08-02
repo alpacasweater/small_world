@@ -33,8 +33,8 @@ struct ConstTerrain {
 }
 
 impl TerrainProvider for ConstTerrain {
-    fn vertical_datum(&self) -> EgmModel {
-        EgmModel::Egm96
+    fn vertical_datum(&self) -> Option<EgmModel> {
+        Some(EgmModel::Egm96)
     }
 
     fn terrain_msl_m(

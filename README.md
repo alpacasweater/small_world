@@ -88,8 +88,8 @@ the model is part of the type, not a comment:
 | | Setup | Use |
 |---|---|---|
 | **EGM96, embedded** (recommended start) | none — just the `embedded-egm96` feature | `EGM96::embedded()?` |
-| **EGM96, downloaded** (~2 MB) | one command, below | `EGM96::new("data/WW15MGH.DAC".as_ref())?` |
-| **EGM2008, downloaded** (~142 MB, 2.5′ resolution) | one command, below | `EGM2008::new("data/EGM2008_2_5.DAC".as_ref())?` |
+| **EGM96, downloaded** (~2 MB) | one command, below | `EGM96::new("data/WW15MGH.DAC")?` |
+| **EGM2008, downloaded** (~142 MB, 2.5′ resolution) | one command, below | `EGM2008::new("data/EGM2008_2_5.DAC")?` |
 
 The download one-liners (work anywhere; no repo checkout needed):
 
@@ -123,24 +123,28 @@ cargo run --example minimal_frame_conversion
 **Step 3 — altitude conversion in code:**
 
 ```rust
-use small_world::altitude::{AltitudeConverter, GeoPoint, VerticalFrame};
-use small_world::geoid::EGM96;
-use small_world::terrain::SrtmDataset;
+use small_world::prelude::*;
 
 let geoid = EGM96::embedded()?; // zero-setup (embedded-egm96 feature)
-// or: EGM96::new(std::path::Path::new("data/WW15MGH.DAC"))?
-// or: EGM2008::new(std::path::Path::new("data/EGM2008_2_5.DAC"))? — higher resolution
-let terrain = SrtmDataset::new("data/srtm");
-let converter = AltitudeConverter::new(&geoid, &terrain);
+// or: EGM96::new("data/WW15MGH.DAC")?
+// or: EGM2008::new("data/EGM2008_2_5.DAC")? — higher resolution
+let converter = AltitudeConverter::new(geoid, SrtmDataset::new("data/srtm"));
+// MSL <-> HAE only? Skip terrain entirely: AltitudeConverter::geoid_only(geoid)
 
 let p = GeoPoint::new(39.0, -77.0)?;
 let alt_hae_m = converter.convert_height_m(p, 120.0, VerticalFrame::Agl, VerticalFrame::Hae)?;
 let p_ecef = converter.ecef_wgs84_from_height_m(p, 120.0, VerticalFrame::Agl)?;
 ```
 
+The converter takes its providers owned, borrowed, or in an `Arc` — build it once in a service
+struct, or ad hoc from borrowed data; the geoid types are `Send + Sync`.
+
 ## Core APIs
 
-Altitude conversion API (converter-first):
+Everything below is one import away: `use small_world::prelude::*;`
+
+Altitude conversion API (converter-first; `AltitudeConverter::geoid_only(geoid)` when no
+terrain dataset is involved):
 - `convert_height_m(point, meters, from, to)`
 - `convert_sample(point, sample, target_frame)`
 - `lla_wgs84_from_height_m(point, meters, from)`
@@ -165,7 +169,8 @@ Reference access:
 - `reference(lat_deg, lon_deg)` → `TerrainReference { geoid_offset_m, ground_msl_m, ground_hae_m }`
 
 Local/global transforms:
-- `Lla`, `Ecef`, `Ned`, `Enu` types with friendly accessors.
+- `Lla`, `Ecef`, `Ned`, `Enu` types with friendly accessors and log-ready `Display`
+  (`51.4779000°, -0.0015000°, 46.000 m HAE`).
 - Checked constructors: `Lla::try_new`, `Ecef::try_new`, `Ned::try_new`, `Enu::try_new`
 - Unchecked `new(...)` constructors still exist for low-level/const-style use and do not validate inputs.
 - `Lla::to_ecef`, `Lla::from_ecef`

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use small_world::wgs84::{AltType, Ecef, Enu, Lla, Ned};
+use small_world::wgs84::{Ecef, Enu, Lla, Ned};
 
 const EARTH_MEAN_RADIUS_M: f64 = 6_371_008.8;
 const ORIGIN_COUNT: usize = 36;
@@ -366,7 +366,7 @@ fn lla_to_ned_matches_proj_oracle() -> Result<(), String> {
 
     for _ in 0..ORIGIN_COUNT {
         let origin = sample_origin(&mut seed);
-        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m, AltType::Wgs84);
+        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m);
 
         let mut points = Vec::with_capacity(POINTS_PER_ORIGIN);
         for _ in 0..POINTS_PER_ORIGIN {
@@ -376,7 +376,7 @@ fn lla_to_ned_matches_proj_oracle() -> Result<(), String> {
         let oracle_ned = proj_lla_to_ned(origin, &points)?;
         for (point, oracle) in points.into_iter().zip(oracle_ned) {
             let our = Ned::from_lla(
-                Lla::new(point.lat_deg, point.lon_deg, point.hae_m, AltType::Wgs84),
+                Lla::new(point.lat_deg, point.lon_deg, point.hae_m),
                 origin_lla,
             );
             let component_err = (our.n() - oracle.n_m)
@@ -423,7 +423,7 @@ fn ned_to_lla_matches_proj_oracle() -> Result<(), String> {
 
     for _ in 0..ORIGIN_COUNT {
         let origin = sample_origin(&mut seed);
-        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m, AltType::Wgs84);
+        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m);
 
         let mut ned_points = Vec::with_capacity(POINTS_PER_ORIGIN);
         for _ in 0..POINTS_PER_ORIGIN {
@@ -528,7 +528,7 @@ fn datum_edge_cases_match_proj_oracle() -> Result<(), String> {
     let mut max_vertical_m = 0.0_f64;
 
     for origin in origins {
-        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m, AltType::Wgs84);
+        let origin_lla = Lla::new(origin.lat_deg, origin.lon_deg, origin.hae_m);
         let ned_samples: Vec<OracleNed> = offsets
             .iter()
             .map(|offset| OracleNed {
@@ -589,18 +589,8 @@ fn enu_to_ned_between_origins_matches_proj_oracle() -> Result<(), String> {
     for _ in 0..ENU_NED_CASE_COUNT {
         let enu_origin = sample_origin(&mut seed);
         let ned_origin = sample_origin(&mut seed);
-        let enu_origin_lla = Lla::new(
-            enu_origin.lat_deg,
-            enu_origin.lon_deg,
-            enu_origin.hae_m,
-            AltType::Wgs84,
-        );
-        let ned_origin_lla = Lla::new(
-            ned_origin.lat_deg,
-            ned_origin.lon_deg,
-            ned_origin.hae_m,
-            AltType::Wgs84,
-        );
+        let enu_origin_lla = Lla::new(enu_origin.lat_deg, enu_origin.lon_deg, enu_origin.hae_m);
+        let ned_origin_lla = Lla::new(ned_origin.lat_deg, ned_origin.lon_deg, ned_origin.hae_m);
 
         let mut enu_points = Vec::with_capacity(POINTS_PER_ORIGIN);
         for _ in 0..POINTS_PER_ORIGIN {
@@ -664,7 +654,7 @@ fn lla_to_ecef_matches_proj_oracle() -> Result<(), String> {
 
     let oracle_ecef = proj_lla_to_ecef(&points)?;
     for (point, oracle) in points.into_iter().zip(oracle_ecef) {
-        let our = Lla::new(point.lat_deg, point.lon_deg, point.hae_m, AltType::Wgs84).to_ecef();
+        let our = Lla::new(point.lat_deg, point.lon_deg, point.hae_m).to_ecef();
         let component_err = (our.x() - oracle.x())
             .abs()
             .max((our.y() - oracle.y()).abs())

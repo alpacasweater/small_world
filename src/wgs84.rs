@@ -20,20 +20,63 @@ const FIRST_ECCENTRICITY: f64 = 0.0818191908426215;
 const FIRST_ECCENTRICITY_SQ: f64 = FIRST_ECCENTRICITY * FIRST_ECCENTRICITY;
 const SECOND_ECCENTRICITY_SQ: f64 = FIRST_ECCENTRICITY_SQ / (1.0 - FIRST_ECCENTRICITY_SQ);
 
-/// Explicit altitude datum for geodetic altitude values.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AltType {
-    /// Altitude is WGS84 ellipsoidal height (HAE).
-    Wgs84,
+impl Display for Lla {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // Seven decimals of a degree is ~1.1 cm at the equator — enough for RTK-grade logs.
+        write!(
+            f,
+            "{:.7}\u{00b0}, {:.7}\u{00b0}, {:.3} m HAE",
+            self.lat_deg, self.lon_deg, self.alt_m
+        )
+    }
+}
+
+impl Display for Ecef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ECEF({:.3}, {:.3}, {:.3}) m",
+            self.x_m, self.y_m, self.z_m
+        )
+    }
+}
+
+impl Display for Ned {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NED(n {:.3}, e {:.3}, d {:.3}) m",
+            self.n_m, self.e_m, self.d_m
+        )
+    }
+}
+
+impl Display for Enu {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ENU(e {:.3}, n {:.3}, u {:.3}) m",
+            self.e_m, self.n_m, self.u_m
+        )
+    }
 }
 
 /// Errors returned by checked WGS84 type constructors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wgs84Error {
+    /// Latitude was non-finite or outside `[-90, 90]` degrees; carries the offending value.
     InvalidLatitude(f64),
+    /// Longitude was non-finite; carries the offending value.
     InvalidLongitude(f64),
+    /// Altitude was non-finite; carries the offending value in meters.
     InvalidAltitude(f64),
-    InvalidComponent { name: &'static str, value: f64 },
+    /// A Cartesian component was non-finite.
+    InvalidComponent {
+        /// The component that failed validation (e.g. `"x_m"`).
+        name: &'static str,
+        /// The offending value.
+        value: f64,
+    },
 }
 
 impl Display for Wgs84Error {
@@ -66,34 +109,29 @@ pub struct Lla {
     lat_deg: f64,
     lon_deg: f64,
     alt_m: f64,
-    alt_type: AltType,
 }
 
 impl Lla {
-    /// Creates an unchecked geodetic coordinate (`lat_deg`, `lon_deg`, `alt_m`) with explicit
-    /// altitude type.
+    /// Creates an unchecked geodetic coordinate (`lat_deg`, `lon_deg`, `alt_m`).
+    ///
+    /// The altitude is always WGS84 ellipsoidal height (HAE) — `Lla` carries no other vertical
+    /// datum; MSL/AGL values convert through [`crate::altitude::AltitudeConverter`] first.
     ///
     /// Prefer [`Self::try_new`] for input validation.
-    pub const fn new(lat_deg: f64, lon_deg: f64, alt_m: f64, alt_type: AltType) -> Self {
+    pub const fn new(lat_deg: f64, lon_deg: f64, alt_m: f64) -> Self {
         Self {
             lat_deg,
             lon_deg,
             alt_m,
-            alt_type,
         }
     }
 
     /// Creates a checked geodetic coordinate with explicit altitude type.
-    pub fn try_new(
-        lat_deg: f64,
-        lon_deg: f64,
-        alt_m: f64,
-        alt_type: AltType,
-    ) -> Result<Self, Wgs84Error> {
+    pub fn try_new(lat_deg: f64, lon_deg: f64, alt_m: f64) -> Result<Self, Wgs84Error> {
         validate_latitude(lat_deg)?;
         validate_longitude(lon_deg)?;
         validate_finite("alt_m", alt_m).map_err(|_| Wgs84Error::InvalidAltitude(alt_m))?;
-        Ok(Self::new(lat_deg, lon_deg, alt_m, alt_type))
+        Ok(Self::new(lat_deg, lon_deg, alt_m))
     }
 
     /// Latitude in decimal degrees.
@@ -106,16 +144,12 @@ impl Lla {
         self.lon_deg
     }
 
-    /// Altitude in meters, interpreted by [`Self::alt_type`].
+    /// Altitude in meters: WGS84 ellipsoidal height (HAE).
     pub const fn alt_m(&self) -> f64 {
         self.alt_m
     }
 
     /// Altitude datum/type for [`Self::alt_m`].
-    pub const fn alt_type(&self) -> AltType {
-        self.alt_type
-    }
-
     /// Converts this geodetic point into absolute ECEF coordinates in meters.
     pub fn to_ecef(self) -> Ecef {
         let lat_rad = self.lat_deg().to_radians();
@@ -147,12 +181,7 @@ impl Lla {
             &mut lon_rad,
             &mut alt_m,
         );
-        Self::new(
-            lat_rad.to_degrees(),
-            lon_rad.to_degrees(),
-            alt_m,
-            AltType::Wgs84,
-        )
+        Self::new(lat_rad.to_degrees(), lon_rad.to_degrees(), alt_m)
     }
 }
 
@@ -265,12 +294,7 @@ impl Ned {
             &mut lon_rad,
             &mut alt_m,
         );
-        Lla::new(
-            lat_rad.to_degrees(),
-            lon_rad.to_degrees(),
-            alt_m,
-            self.origin.alt_type(),
-        )
+        Lla::new(lat_rad.to_degrees(), lon_rad.to_degrees(), alt_m)
     }
 
     /// Builds an NED point at `origin` from an absolute geodetic point in the same altitude datum.
@@ -410,12 +434,7 @@ impl Enu {
             &mut lon_rad,
             &mut alt_m,
         );
-        Lla::new(
-            lat_rad.to_degrees(),
-            lon_rad.to_degrees(),
-            alt_m,
-            self.origin.alt_type(),
-        )
+        Lla::new(lat_rad.to_degrees(), lon_rad.to_degrees(), alt_m)
     }
 
     /// Converts this ENU point into NED at `ned_origin` via absolute LLA.
@@ -806,8 +825,25 @@ mod tests {
         ecef_to_enu_wgs84, ecef_to_lla, ecef_to_lla_wgs84, ecef_to_ned, ecef_to_ned_wgs84,
         enu_to_ecef_wgs84, enu_to_lla, enu_to_ned_between_origins, euclidean_distance, lla_to_ecef,
         lla_to_ecef_wgs84, lla_to_ned_wgs84, ned_to_ecef, ned_to_ecef_wgs84, ned_to_lla_wgs84,
-        AltType, Ecef, Enu, Lla, Ned, Wgs84Error,
+        Ecef, Enu, Lla, Ned, Wgs84Error,
     };
+
+    #[test]
+    fn display_formats_are_log_friendly() {
+        let lla = Lla::new(51.4779, -0.0015, 46.0);
+        assert_eq!(
+            lla.to_string(),
+            "51.4779000\u{b0}, -0.0015000\u{b0}, 46.000 m HAE"
+        );
+        assert_eq!(
+            Ecef::new(1.0, -2.5, 3.25).to_string(),
+            "ECEF(1.000, -2.500, 3.250) m"
+        );
+        let ned = Ned::new(1.0, 2.0, -3.0, lla);
+        assert_eq!(ned.to_string(), "NED(n 1.000, e 2.000, d -3.000) m");
+        let enu = Enu::new(2.0, 1.0, 3.0, lla);
+        assert_eq!(enu.to_string(), "ENU(e 2.000, n 1.000, u 3.000) m");
+    }
 
     #[test]
     fn lla_ecef_round_trip() {
@@ -865,7 +901,7 @@ mod tests {
 
     #[test]
     fn enu_to_ned_same_origin_matches_axis_convention() {
-        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0);
         let enu = Enu::new(12.0, -4.0, 7.5, origin);
         let ned = enu_to_ned_between_origins(enu, origin);
 
@@ -876,20 +912,20 @@ mod tests {
 
     #[test]
     fn checked_constructors_validate_inputs() {
-        let valid_origin = Lla::try_new(39.0, -77.0, 200.0, AltType::Wgs84).unwrap();
+        let valid_origin = Lla::try_new(39.0, -77.0, 200.0).unwrap();
         let _ned = Ned::try_new(10.0, 20.0, -5.0, valid_origin).unwrap();
         let _enu = Enu::try_new(10.0, 20.0, 5.0, valid_origin).unwrap();
 
-        let invalid_lat = Lla::try_new(120.0, -77.0, 200.0, AltType::Wgs84).unwrap_err();
+        let invalid_lat = Lla::try_new(120.0, -77.0, 200.0).unwrap_err();
         assert!(matches!(invalid_lat, Wgs84Error::InvalidLatitude(_)));
 
-        let invalid_lon = Lla::try_new(39.0, f64::NAN, 200.0, AltType::Wgs84).unwrap_err();
+        let invalid_lon = Lla::try_new(39.0, f64::NAN, 200.0).unwrap_err();
         assert!(matches!(invalid_lon, Wgs84Error::InvalidLongitude(_)));
 
-        let invalid_alt = Lla::try_new(39.0, -77.0, f64::INFINITY, AltType::Wgs84).unwrap_err();
+        let invalid_alt = Lla::try_new(39.0, -77.0, f64::INFINITY).unwrap_err();
         assert!(matches!(invalid_alt, Wgs84Error::InvalidAltitude(_)));
 
-        let unchecked_bad_origin = Lla::new(999.0, 0.0, 0.0, AltType::Wgs84);
+        let unchecked_bad_origin = Lla::new(999.0, 0.0, 0.0);
         let ned_err = Ned::try_new(1.0, 2.0, 3.0, unchecked_bad_origin).unwrap_err();
         assert!(matches!(ned_err, Wgs84Error::InvalidLatitude(_)));
 
@@ -902,7 +938,7 @@ mod tests {
 
     #[test]
     fn public_ned_lla_round_trip_is_consistent() {
-        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0);
         let ned = Ned::new(250.0, -120.0, 15.0, origin);
 
         let point = ned_to_lla_wgs84(ned);
@@ -915,7 +951,7 @@ mod tests {
 
     #[test]
     fn public_lla_ecef_round_trip_is_consistent() {
-        let lla = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let lla = Lla::new(39.1612306, -76.8965265, 33.0);
         let ecef = lla_to_ecef_wgs84(lla);
         let lla_back = ecef_to_lla_wgs84(ecef);
 
@@ -926,7 +962,7 @@ mod tests {
 
     #[test]
     fn public_ned_ecef_round_trip_is_consistent() {
-        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0);
         let ned = Ned::new(250.0, -120.0, 15.0, origin);
 
         let ecef = ned_to_ecef_wgs84(ned);
@@ -939,7 +975,7 @@ mod tests {
 
     #[test]
     fn public_enu_ecef_round_trip_is_consistent() {
-        let origin = Lla::new(39.1612306, -76.8965265, 33.0, AltType::Wgs84);
+        let origin = Lla::new(39.1612306, -76.8965265, 33.0);
         let enu = Enu::new(250.0, -120.0, -15.0, origin);
 
         let ecef = enu_to_ecef_wgs84(enu);
@@ -972,7 +1008,7 @@ mod tests {
             east_m in -10000.0f64..10000.0,
             down_m in -5000.0f64..5000.0,
         ) {
-            let origin = Lla::new(lat_deg, lon_deg, hae_m, AltType::Wgs84);
+            let origin = Lla::new(lat_deg, lon_deg, hae_m);
             let ned = Ned::new(north_m, east_m, down_m, origin);
 
             let point = ned_to_lla_wgs84(ned);
@@ -991,7 +1027,7 @@ mod tests {
             lon_deg in -180.0f64..180.0,
             hae_m in -200.0f64..12000.0,
         ) {
-            let lla = Lla::new(lat_deg, lon_deg, hae_m, AltType::Wgs84);
+            let lla = Lla::new(lat_deg, lon_deg, hae_m);
             let ecef = lla_to_ecef_wgs84(lla);
             let lla_back = ecef_to_lla_wgs84(ecef);
 
@@ -1014,8 +1050,8 @@ mod tests {
             north_m in -5000.0f64..5000.0,
             up_m in -2000.0f64..2000.0,
         ) {
-            let enu_origin = Lla::new(enu_origin_lat_deg, enu_origin_lon_deg, enu_origin_hae_m, AltType::Wgs84);
-            let ned_origin = Lla::new(ned_origin_lat_deg, ned_origin_lon_deg, ned_origin_hae_m, AltType::Wgs84);
+            let enu_origin = Lla::new(enu_origin_lat_deg, enu_origin_lon_deg, enu_origin_hae_m);
+            let ned_origin = Lla::new(ned_origin_lat_deg, ned_origin_lon_deg, ned_origin_hae_m);
             let enu_point = Enu::new(east_m, north_m, up_m, enu_origin);
 
             let wrapper_output = enu_to_ned_between_origins(enu_point, ned_origin);
@@ -1042,7 +1078,6 @@ mod tests {
                 point_lat_rad.to_degrees(),
                 point_lon_rad.to_degrees(),
                 point_hae_m,
-                AltType::Wgs84,
             );
             let reconstructed_point = ned_to_lla_wgs84(wrapper_output);
 

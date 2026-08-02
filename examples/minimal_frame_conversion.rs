@@ -1,23 +1,21 @@
 use std::error::Error;
-use std::path::Path;
 
-use small_world::altitude::{AltitudeConverter, EgmModel, GeoPoint, VerticalFrame};
-use small_world::geoid::{EGM2008, EGM96};
-use small_world::terrain::SrtmDataset;
-use small_world::wgs84::{Enu, Ned};
+use small_world::prelude::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let egm96 = EGM96::new(Path::new("data/WW15MGH.DAC"))?;
-    let egm2008 = EGM2008::new(Path::new("data/EGM2008_2_5.DAC"))?;
+    let egm96 = EGM96::new("data/WW15MGH.DAC")?;
+    let egm2008 = EGM2008::new("data/EGM2008_2_5.DAC")?;
     let terrain = SrtmDataset::new("data/srtm"); // must contain SRTM .hgt tiles for your origin
     let c96 = AltitudeConverter::new(&egm96, &terrain);
-    let c08 = AltitudeConverter::new(&egm2008, &terrain);
+    // EGM2008 paired with NoTerrain: SRTM is EGM96-referenced, so an EGM2008 converter may not
+    // answer AGL queries (TerrainDatumMismatch) — and this example only needs MSL <-> HAE from it.
+    let c08 = AltitudeConverter::geoid_only(&egm2008);
 
     // EXAMPLE 1: ENU point at MSL(EGM2008) origin -> NED point at MSL(EGM96) origin.
     let enu_origin = c08.lla_wgs84_from_height_m(
         GeoPoint::new(39.0000, -77.0000)?,
         110.0,
-        VerticalFrame::Msl(EgmModel::Egm96),
+        VerticalFrame::Msl(EgmModel::Egm2008),
     )?;
     let ned_origin = c96.lla_wgs84_from_height_m(
         GeoPoint::new(39.0005, -77.0008)?,

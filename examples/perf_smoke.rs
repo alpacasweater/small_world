@@ -14,7 +14,7 @@ use small_world::ffi::{
 use small_world::geoid::EGM96;
 use small_world::height::Interpolation;
 use small_world::terrain::SrtmDataset;
-use small_world::wgs84::{AltType, Lla, Ned};
+use small_world::wgs84::{Lla, Ned};
 
 #[derive(Clone, Copy)]
 struct Metric {
@@ -180,7 +180,7 @@ fn bench_terrain_bilinear(terrain_root: &Path) -> Metric {
 }
 
 fn bench_wgs84_round_trip() -> Metric {
-    let origin = Lla::new(39.0, -77.0, 300.0, AltType::Wgs84);
+    let origin = Lla::new(39.0, -77.0, 300.0);
 
     measure(1_000_000, 2_000, |i| {
         let ned = Ned::new(

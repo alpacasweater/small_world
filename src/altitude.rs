@@ -12,7 +12,7 @@ use crate::geoid::{EgmError, EGM2008, EGM96};
 pub use crate::geoid::EgmModel;
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, TerrainError};
-use crate::wgs84::{AltType, Ecef, Lla};
+use crate::wgs84::{Ecef, Lla};
 
 /// Vertical reference frame for altitude values in this crate.
 ///
@@ -35,10 +35,22 @@ pub enum VerticalFrame {
     Hae,
 }
 
+impl Display for VerticalFrame {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerticalFrame::Agl => f.write_str("AGL"),
+            VerticalFrame::Msl(model) => write!(f, "MSL({model})"),
+            VerticalFrame::Hae => f.write_str("HAE"),
+        }
+    }
+}
+
 /// Geodetic query location in decimal degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeoPoint {
+    /// Geodetic latitude in decimal degrees, in `[-90, 90]`.
     pub lat_deg: f64,
+    /// Geodetic longitude in decimal degrees.
     pub lon_deg: f64,
 }
 
@@ -58,7 +70,9 @@ impl GeoPoint {
 /// Altitude sample with explicit vertical frame and meter units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AltitudeSample {
+    /// Height in meters, interpreted in `frame`.
     pub meters: f64,
+    /// The vertical frame `meters` is expressed in.
     pub frame: VerticalFrame,
 }
 
@@ -85,6 +99,12 @@ impl AltitudeSample {
     }
 }
 
+impl Display for AltitudeSample {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.3} m {}", self.meters, self.frame)
+    }
+}
+
 /// Errors returned by altitude conversion and reference queries.
 #[derive(Debug)]
 pub enum AltitudeError {
@@ -93,9 +113,19 @@ pub enum AltitudeError {
     /// Failed terrain lookup or interpolation.
     Terrain(TerrainError),
     /// Invalid geographic coordinate argument.
-    InvalidCoordinate { name: &'static str, value: f64 },
+    InvalidCoordinate {
+        /// The parameter that failed validation (e.g. `"lat_deg"`).
+        name: &'static str,
+        /// The offending value.
+        value: f64,
+    },
     /// Invalid altitude/height argument.
-    InvalidHeight { name: &'static str, value: f64 },
+    InvalidHeight {
+        /// The parameter that failed validation (e.g. `"msl_m"`).
+        name: &'static str,
+        /// The offending value.
+        value: f64,
+    },
     /// An `Msl`-tagged value names a different geoid model than the converter's geoid.
     GeoidModelMismatch {
         /// The model named by the value being converted.
@@ -194,10 +224,30 @@ pub trait GeoidProvider {
         interpolation: Interpolation,
     ) -> Result<f64, AltitudeError>;
 
-    /// The geoid model this provider implements. Defines what [`VerticalFrame::Msl(EgmModel::Egm96)`] means for
+    /// The geoid model this provider implements. Defines what [`VerticalFrame::Msl`] means for
     /// any converter built on it, and is checked against every `Msl`-tagged value.
     fn model(&self) -> EgmModel;
 }
+
+macro_rules! forward_geoid_provider {
+    ($($ptr:ty),+ $(,)?) => {$(
+        impl<G: GeoidProvider + ?Sized> GeoidProvider for $ptr {
+            fn geoid_offset_m(
+                &self,
+                lat_deg: f64,
+                lon_deg: f64,
+                interpolation: Interpolation,
+            ) -> Result<f64, AltitudeError> {
+                (**self).geoid_offset_m(lat_deg, lon_deg, interpolation)
+            }
+
+            fn model(&self) -> EgmModel {
+                (**self).model()
+            }
+        }
+    )+};
+}
+forward_geoid_provider!(&G, std::sync::Arc<G>, Box<G>);
 
 /// Interface for terrain providers (`ground_msl` in `MSL = ground_msl + AGL`).
 pub trait TerrainProvider {
@@ -209,10 +259,54 @@ pub trait TerrainProvider {
         interpolation: Interpolation,
     ) -> Result<f64, AltitudeError>;
 
-    /// The geoid model this dataset's orthometric heights are referenced to. `Agl` conversions
+    /// The geoid model this dataset's orthometric heights are referenced to, or `None` when the
+    /// provider makes no orthometric claim (see [`NoTerrain`]). When `Some`, `Agl` conversions
     /// verify it against the converter's geoid so ground elevation and geoid separation are
     /// never mixed across datums.
-    fn vertical_datum(&self) -> EgmModel;
+    fn vertical_datum(&self) -> Option<EgmModel>;
+}
+
+macro_rules! forward_terrain_provider {
+    ($($ptr:ty),+ $(,)?) => {$(
+        impl<T: TerrainProvider + ?Sized> TerrainProvider for $ptr {
+            fn terrain_msl_m(
+                &self,
+                lat_deg: f64,
+                lon_deg: f64,
+                interpolation: Interpolation,
+            ) -> Result<f64, AltitudeError> {
+                (**self).terrain_msl_m(lat_deg, lon_deg, interpolation)
+            }
+
+            fn vertical_datum(&self) -> Option<EgmModel> {
+                (**self).vertical_datum()
+            }
+        }
+    )+};
+}
+forward_terrain_provider!(&T, std::sync::Arc<T>, Box<T>);
+
+/// The terrain provider for geoid-only converters ([`AltitudeConverter::geoid_only`]).
+///
+/// Makes no orthometric claim (`vertical_datum` is `None`) and fails every terrain query, so
+/// `MSL <-> HAE` conversion works with zero terrain setup while any `Agl` conversion returns a
+/// clear "no terrain dataset configured" error instead of a wrong answer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoTerrain;
+
+impl TerrainProvider for NoTerrain {
+    fn terrain_msl_m(
+        &self,
+        _lat_deg: f64,
+        _lon_deg: f64,
+        _interpolation: Interpolation,
+    ) -> Result<f64, AltitudeError> {
+        Err(AltitudeError::Terrain(TerrainError::NotConfigured))
+    }
+
+    fn vertical_datum(&self) -> Option<EgmModel> {
+        None
+    }
 }
 
 impl GeoidProvider for EGM96 {
@@ -257,8 +351,8 @@ impl GeoidProvider for EGM2008 {
 
 impl TerrainProvider for SrtmDataset {
     /// SRTM heights are published relative to the EGM96 geoid (NASA/USGS product definition).
-    fn vertical_datum(&self) -> EgmModel {
-        EgmModel::Egm96
+    fn vertical_datum(&self) -> Option<EgmModel> {
+        Some(EgmModel::Egm96)
     }
 
     fn terrain_msl_m(
@@ -272,8 +366,16 @@ impl TerrainProvider for SrtmDataset {
     }
 }
 
-/// Terrain/geoid reference terms for a geodetic point.
-#[derive(Clone, Copy, Debug)]
+impl<G: GeoidProvider> AltitudeConverter<G, NoTerrain> {
+    /// A converter for geoid-only work (`MSL <-> HAE`) that needs no terrain dataset at all.
+    ///
+    /// `Agl` conversions on this converter fail with a "no terrain dataset configured" error;
+    /// everything else behaves identically to [`AltitudeConverter::new`].
+    pub fn geoid_only(geoid: G) -> Self {
+        Self::new(geoid, NoTerrain)
+    }
+}
+
 /// Re-references orthometric heights between geoid models — the explicit bridge for systems
 /// where one data source is EGM96-referenced and another EGM2008-referenced.
 ///
@@ -296,26 +398,27 @@ impl TerrainProvider for SrtmDataset {
 /// # Ok(())
 /// # }
 /// ```
-pub struct GeoidShift<'a, F, T>
+#[derive(Clone, Copy, Debug)]
+pub struct GeoidShift<F, T>
 where
-    F: GeoidProvider + ?Sized,
-    T: GeoidProvider + ?Sized,
+    F: GeoidProvider,
+    T: GeoidProvider,
 {
-    from: &'a F,
-    to: &'a T,
+    from: F,
+    to: T,
     interpolation: Interpolation,
 }
 
-impl<'a, F, T> GeoidShift<'a, F, T>
+impl<F, T> GeoidShift<F, T>
 where
-    F: GeoidProvider + ?Sized,
-    T: GeoidProvider + ?Sized,
+    F: GeoidProvider,
+    T: GeoidProvider,
 {
     /// Creates a re-referencer from `from`'s model to `to`'s model.
     ///
     /// Equal models are permitted and act as an exact identity (no grid queries), so generic
     /// code need not special-case the degenerate direction.
-    pub fn new(from: &'a F, to: &'a T) -> Self {
+    pub fn new(from: F, to: T) -> Self {
         Self {
             from,
             to,
@@ -380,6 +483,8 @@ where
     }
 }
 
+/// Terrain/geoid reference terms for a geodetic point.
+#[derive(Clone, Copy, Debug)]
 pub struct TerrainReference {
     /// Geoid separation (`N`) where `HAE = MSL + N`.
     pub geoid_offset_m: f64,
@@ -389,31 +494,38 @@ pub struct TerrainReference {
     pub ground_hae_m: f64,
 }
 
+/// Frame-explicit altitude converter over a geoid provider and a terrain provider.
+///
+/// The geoid defines what [`VerticalFrame::Msl`] means for this converter; the terrain answers
+/// `Agl` queries. Providers may be owned, borrowed, or shared (`&G`, `Arc<G>`, `Box<G>` all
+/// implement the provider traits), so the converter can live in a long-lived service struct or
+/// be built ad hoc from borrowed data. See [`AltitudeConverter::geoid_only`] when no terrain
+/// dataset is involved.
 #[derive(Clone, Copy, Debug)]
-pub struct AltitudeConverter<'a, G, T>
+pub struct AltitudeConverter<G, T>
 where
-    G: GeoidProvider + ?Sized,
-    T: TerrainProvider + ?Sized,
+    G: GeoidProvider,
+    T: TerrainProvider,
 {
-    geoid: &'a G,
-    terrain: &'a T,
+    geoid: G,
+    terrain: T,
     geoid_interpolation: Interpolation,
     terrain_interpolation: Interpolation,
 }
 
-impl<'a, G, T> AltitudeConverter<'a, G, T>
+impl<G, T> AltitudeConverter<G, T>
 where
-    G: GeoidProvider + ?Sized,
-    T: TerrainProvider + ?Sized,
+    G: GeoidProvider,
+    T: TerrainProvider,
 {
     /// Creates a converter that combines:
     /// - geoid separation (`MSL <-> HAE`)
     /// - terrain elevation (`MSL <-> AGL`)
     ///
     /// The geoid you pass **defines what `Msl` means** for every conversion this converter
-    /// performs (see [`VerticalFrame::Msl(EgmModel::Egm96)`]); the concrete models report which one they are via
+    /// performs (see [`VerticalFrame::Msl`]); the concrete models report which one they are via
     /// `EGM96::model()` / `EGM2008::model()`, so applications can record or assert provenance.
-    pub fn new(geoid: &'a G, terrain: &'a T) -> Self {
+    pub fn new(geoid: G, terrain: T) -> Self {
         Self {
             geoid,
             terrain,
@@ -469,7 +581,7 @@ where
 
     /// Converts an altitude sample from one explicit vertical frame to another.
     ///
-    /// Datum coherence is enforced, not assumed: an [`VerticalFrame::Msl(EgmModel::Egm96)`] tag naming a model
+    /// Datum coherence is enforced, not assumed: an [`VerticalFrame::Msl`] tag naming a model
     /// other than the converter's geoid, or an [`VerticalFrame::Agl`] conversion over a terrain
     /// dataset referenced to a different model than the geoid, is an error — never a silent
     /// decimeter-scale reinterpretation.
@@ -520,7 +632,11 @@ where
     }
 
     fn require_datum_coherence(&self) -> Result<(), AltitudeError> {
-        let terrain = self.terrain.vertical_datum();
+        // A provider with no orthometric claim (NoTerrain) has nothing to contradict; its
+        // terrain queries fail on their own terms if an Agl conversion proceeds.
+        let Some(terrain) = self.terrain.vertical_datum() else {
+            return Ok(());
+        };
         let geoid = self.geoid.model();
         if terrain == geoid {
             Ok(())
@@ -552,12 +668,7 @@ where
         source_frame: VerticalFrame,
     ) -> Result<Lla, AltitudeError> {
         let hae_m = self.convert_height_m(point, meters, source_frame, VerticalFrame::Hae)?;
-        Ok(Lla::new(
-            point.lat_deg,
-            point.lon_deg,
-            hae_m,
-            AltType::Wgs84,
-        ))
+        Ok(Lla::new(point.lat_deg, point.lon_deg, hae_m))
     }
 
     /// Typed variant of [`Self::lla_wgs84_from_height_m`] using an [`AltitudeSample`].
@@ -567,12 +678,7 @@ where
         sample: AltitudeSample,
     ) -> Result<Lla, AltitudeError> {
         let hae = self.convert_sample(point, sample, VerticalFrame::Hae)?;
-        Ok(Lla::new(
-            point.lat_deg,
-            point.lon_deg,
-            hae.meters,
-            AltType::Wgs84,
-        ))
+        Ok(Lla::new(point.lat_deg, point.lon_deg, hae.meters))
     }
 
     /// Converts a height sample at `point` into absolute WGS84 ECEF coordinates in meters.
@@ -725,8 +831,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use crate::wgs84::AltType;
-
     use super::{
         AltitudeConverter, AltitudeError, AltitudeSample, EgmModel, GeoPoint, GeoidProvider,
         GeoidShift, Interpolation, TerrainProvider, VerticalFrame,
@@ -802,8 +906,8 @@ mod tests {
     }
 
     impl TerrainProvider for MockTerrain {
-        fn vertical_datum(&self) -> EgmModel {
-            self.datum
+        fn vertical_datum(&self) -> Option<EgmModel> {
+            Some(self.datum)
         }
 
         fn terrain_msl_m(
@@ -900,6 +1004,139 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn converters_work_owned_borrowed_and_shared() {
+        // The ergonomics contract: the converter accepts its providers by value, by reference,
+        // or in an Arc — so it can live in a long-lived service struct, be built ad hoc from
+        // borrowed data, or share providers across threads, without wrapper types.
+        struct GeoService {
+            converter: AltitudeConverter<MockGeoid, MockTerrain>,
+        }
+        let service = GeoService {
+            converter: AltitudeConverter::new(MockGeoid::new(30.0), MockTerrain::new(120.0)),
+        };
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+        let hae = service
+            .converter
+            .convert_height_m(
+                point,
+                100.0,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+            )
+            .unwrap();
+        assert!((hae - 130.0).abs() < 1e-12);
+
+        let geoid = MockGeoid::new(30.0);
+        let terrain = MockTerrain::new(120.0);
+        let borrowed = AltitudeConverter::new(&geoid, &terrain);
+        assert!(
+            (borrowed
+                .convert_height_m(
+                    point,
+                    100.0,
+                    VerticalFrame::Msl(EgmModel::Egm96),
+                    VerticalFrame::Hae
+                )
+                .unwrap()
+                - hae)
+                .abs()
+                < 1e-12
+        );
+
+        // The Arc leg uses Sync providers (the interpolation-counting mocks hold Cells): a
+        // shared converter is exactly the cross-thread case, so the providers must be Sync.
+        struct ConstGeoid;
+        impl GeoidProvider for ConstGeoid {
+            fn geoid_offset_m(
+                &self,
+                _lat: f64,
+                _lon: f64,
+                _i: Interpolation,
+            ) -> Result<f64, AltitudeError> {
+                Ok(30.0)
+            }
+            fn model(&self) -> EgmModel {
+                EgmModel::Egm96
+            }
+        }
+        struct ConstTerrain;
+        impl TerrainProvider for ConstTerrain {
+            fn terrain_msl_m(
+                &self,
+                _lat: f64,
+                _lon: f64,
+                _i: Interpolation,
+            ) -> Result<f64, AltitudeError> {
+                Ok(120.0)
+            }
+            fn vertical_datum(&self) -> Option<EgmModel> {
+                Some(EgmModel::Egm96)
+            }
+        }
+        let shared = AltitudeConverter::new(
+            std::sync::Arc::new(ConstGeoid),
+            std::sync::Arc::new(ConstTerrain),
+        );
+        fn assert_send_sync<T: Send + Sync>(_: &T) {}
+        assert_send_sync(&shared);
+        assert!(
+            (shared
+                .convert_height_m(
+                    point,
+                    100.0,
+                    VerticalFrame::Msl(EgmModel::Egm96),
+                    VerticalFrame::Hae
+                )
+                .unwrap()
+                - hae)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn geoid_only_converter_needs_no_terrain() {
+        // MSL <-> HAE with zero terrain setup; AGL fails with the "no terrain" error rather
+        // than a datum error or a wrong answer.
+        let converter = AltitudeConverter::geoid_only(MockGeoid::new(30.0));
+        let point = GeoPoint::new(10.0, 20.0).unwrap();
+
+        let hae = converter
+            .convert_height_m(
+                point,
+                100.0,
+                VerticalFrame::Msl(EgmModel::Egm96),
+                VerticalFrame::Hae,
+            )
+            .unwrap();
+        assert!((hae - 130.0).abs() < 1e-12);
+
+        let err = converter
+            .convert_height_m(point, 50.0, VerticalFrame::Agl, VerticalFrame::Hae)
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("no terrain dataset configured"),
+            "AGL on geoid_only must explain itself: {text}"
+        );
+    }
+
+    #[test]
+    fn display_formats_are_log_friendly() {
+        assert_eq!(VerticalFrame::Hae.to_string(), "HAE");
+        assert_eq!(
+            VerticalFrame::Msl(EgmModel::Egm2008).to_string(),
+            "MSL(EGM2008)"
+        );
+        assert_eq!(
+            AltitudeSample::msl_m(46.0, EgmModel::Egm96)
+                .unwrap()
+                .to_string(),
+            "46.000 m MSL(EGM96)"
+        );
     }
 
     #[test]
@@ -1152,7 +1389,6 @@ mod tests {
         assert!((lla.lat_deg() - 10.0).abs() < 1e-12);
         assert!((lla.lon_deg() - 20.0).abs() < 1e-12);
         assert!((lla.alt_m() - 200.0).abs() < 1e-12);
-        assert_eq!(lla.alt_type(), AltType::Wgs84);
     }
 
     #[test]
@@ -1172,7 +1408,6 @@ mod tests {
         assert!((from_scalar.lat_deg() - from_sample.lat_deg()).abs() < 1e-12);
         assert!((from_scalar.lon_deg() - from_sample.lon_deg()).abs() < 1e-12);
         assert!((from_scalar.alt_m() - from_sample.alt_m()).abs() < 1e-12);
-        assert_eq!(from_scalar.alt_type(), from_sample.alt_type());
     }
 
     #[test]
@@ -1308,7 +1543,6 @@ mod tests {
         assert!((lla.lat_deg() - 10.0).abs() < 1e-12);
         assert!((lla.lon_deg() - 20.0).abs() < 1e-12);
         assert!((lla.alt_m() - 200.0).abs() < 1e-12);
-        assert_eq!(lla.alt_type(), AltType::Wgs84);
         assert_eq!(geoid.query_count(), 0);
         assert_eq!(terrain.query_count(), 0);
     }

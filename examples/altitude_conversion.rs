@@ -16,10 +16,12 @@ fn print_usage() {
     println!("  cargo run --example altitude_conversion -- egm96 data/WW15MGH.DAC data/srtm 39.0 -77.0 120 agl hae bilinear");
 }
 
-fn parse_height_ref(value: &str) -> Option<VerticalFrame> {
+fn parse_height_ref(value: &str, model: EgmModel) -> Option<VerticalFrame> {
     match value.to_ascii_lowercase().as_str() {
         "agl" => Some(VerticalFrame::Agl),
-        "msl" => Some(VerticalFrame::Msl(EgmModel::Egm96)),
+        // "msl" means MSL in the geoid model chosen on the command line; the converter
+        // rejects a mismatched tag, so the tag must follow the model.
+        "msl" => Some(VerticalFrame::Msl(model)),
         "hae" => Some(VerticalFrame::Hae),
         _ => None,
     }
@@ -75,13 +77,24 @@ fn main() {
     }
 
     let model = args[1].to_ascii_lowercase();
+    let egm_model = match model.as_str() {
+        "egm96" => EgmModel::Egm96,
+        "egm2008" => EgmModel::Egm2008,
+        _ => {
+            eprintln!("unknown geoid model: {model}");
+            print_usage();
+            return;
+        }
+    };
     let geoid_path = Path::new(&args[2]);
     let srtm_root = Path::new(&args[3]);
     let lat_deg: f64 = args[4].parse().expect("lat_deg must be a float");
     let lon_deg: f64 = args[5].parse().expect("lon_deg must be a float");
     let value_m: f64 = args[6].parse().expect("value_m must be a float");
-    let source_frame = parse_height_ref(&args[7]).expect("invalid from reference (agl|msl|hae)");
-    let target_frame = parse_height_ref(&args[8]).expect("invalid to reference (agl|msl|hae)");
+    let source_frame =
+        parse_height_ref(&args[7], egm_model).expect("invalid from reference (agl|msl|hae)");
+    let target_frame =
+        parse_height_ref(&args[8], egm_model).expect("invalid to reference (agl|msl|hae)");
     let interpolation =
         parse_interpolation(args.get(9).map(String::as_str)).expect("invalid interpolation mode");
     let point = GeoPoint::new(lat_deg, lon_deg).expect("invalid geodetic point");

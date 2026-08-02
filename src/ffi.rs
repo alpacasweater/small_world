@@ -10,7 +10,7 @@ use crate::altitude::{AltitudeConverter, AltitudeError, GeoPoint, GeoidProvider,
 use crate::geoid::{EgmModel, EGM2008, EGM96};
 use crate::height::Interpolation;
 use crate::terrain::{SrtmDataset, VoidPolicy};
-use crate::wgs84::{AltType, Ecef, Enu, Lla, Ned};
+use crate::wgs84::{Ecef, Enu, Lla, Ned};
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -118,12 +118,7 @@ fn lla_from_sw(value: SwLlaWgs84) -> Result<Lla, SwStatus> {
             &format!("hae_m must be finite, got {}", value.hae_m),
         ));
     }
-    Ok(Lla::new(
-        value.lat_deg,
-        value.lon_deg,
-        value.hae_m,
-        AltType::Wgs84,
-    ))
+    Ok(Lla::new(value.lat_deg, value.lon_deg, value.hae_m))
 }
 
 fn sw_from_lla(value: Lla) -> SwLlaWgs84 {
@@ -219,7 +214,7 @@ struct ConverterCore {
 }
 
 impl ConverterCore {
-    fn altitude_converter(&self) -> AltitudeConverter<'_, GeoidDataset, SrtmDataset> {
+    fn altitude_converter(&self) -> AltitudeConverter<&GeoidDataset, &SrtmDataset> {
         AltitudeConverter::new(&self.geoid, &self.terrain)
             .with_geoid_interpolation(self.geoid_interpolation)
             .with_terrain_interpolation(self.terrain_interpolation)
@@ -235,11 +230,21 @@ pub struct SwConverterHandle {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwStatus {
+    /// The call succeeded and all output parameters were written.
     Ok = 0,
+    /// A required pointer argument (handle, path, or output pointer) was null.
     NullPointer = 1,
+    /// An argument was rejected: non-finite or out-of-range coordinate/height, invalid or
+    /// non-UTF-8 path string, or a vertical-datum mismatch (e.g. AGL conversion where the
+    /// terrain dataset's datum does not match the converter's geoid model).
     InvalidArgument = 2,
+    /// `sw_converter_create` failed to open or preload the geoid dataset.
     InitializationError = 3,
+    /// A geoid or terrain lookup failed at query time (e.g. missing tile, out-of-coverage
+    /// point, or a void DEM sample under [`SwVoidPolicy::Error`]).
     QueryError = 4,
+    /// Internal invariant failure: the converter's lock was poisoned by a panic in an
+    /// earlier call on the same handle.
     InternalError = 5,
 }
 
@@ -247,7 +252,9 @@ pub enum SwStatus {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwGeoidModel {
+    /// EGM96 geoid undulation grid (15-minute `WW15MGH.DAC` format).
     Egm96 = 0,
+    /// EGM2008 geoid undulation grid.
     Egm2008 = 1,
 }
 
@@ -255,8 +262,11 @@ pub enum SwGeoidModel {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwInterpolation {
+    /// Nearest-neighbor: return the closest grid sample unmodified.
     Nearest = 0,
+    /// Bilinear interpolation over the surrounding 2x2 grid samples.
     Bilinear = 1,
+    /// Bicubic interpolation over the surrounding 4x4 grid samples.
     Bicubic = 2,
 }
 
@@ -264,8 +274,16 @@ pub enum SwInterpolation {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwVerticalFrame {
+    /// Height above the local DEM terrain surface, in meters.
     Agl = 0,
+    /// Orthometric height above mean sea level, in meters, relative to the geoid model the
+    /// converter was created with (EGM96 or EGM2008).
+    ///
+    /// This C ABI value carries no model tag, so it always resolves to the converter's own
+    /// geoid model; MSL values referenced to a different model must be re-referenced before
+    /// the call — the mismatch cannot be detected here.
     Msl = 1,
+    /// Ellipsoidal height above the WGS84 reference ellipsoid (HAE), in meters.
     Hae = 2,
 }
 
@@ -273,8 +291,12 @@ pub enum SwVerticalFrame {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwVoidPolicy {
+    /// Fail the query with [`SwStatus::QueryError`] on a void (`-32768`) DEM sample.
     Error = 0,
+    /// Treat void DEM samples as zero meters MSL.
     Zero = 1,
+    /// Substitute the nearest valid sample in the same tile, searching up to
+    /// `void_policy_radius_cells` grid cells away.
     NearestValid = 2,
 }
 
@@ -282,12 +304,21 @@ pub enum SwVoidPolicy {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwConverterOptions {
+    /// Geoid model to load from the `geoid_path` given to [`sw_converter_create`].
     pub geoid_model: SwGeoidModel,
+    /// Interpolation mode for geoid undulation lookups.
     pub geoid_interpolation: SwInterpolation,
+    /// Interpolation mode for DEM terrain elevation lookups.
     pub terrain_interpolation: SwInterpolation,
+    /// Maximum number of SRTM terrain tiles kept in the in-memory cache.
     pub terrain_cache_tiles: u32,
+    /// How void (`-32768`) DEM samples are handled during terrain queries.
     pub void_policy: SwVoidPolicy,
+    /// Maximum search radius in grid cells for [`SwVoidPolicy::NearestValid`]; ignored by
+    /// the other void policies.
     pub void_policy_radius_cells: u32,
+    /// Nonzero loads the entire geoid grid into memory during [`sw_converter_create`]
+    /// (failures surface there as [`SwStatus::InitializationError`]); zero defers loading.
     pub preload_geoid: u8,
 }
 
@@ -295,8 +326,12 @@ pub struct SwConverterOptions {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwTerrainReference {
+    /// Geoid separation `N` in meters, where `HAE = MSL + N`.
     pub geoid_offset_m: f64,
+    /// DEM terrain elevation in meters, orthometric MSL relative to the converter's geoid
+    /// model.
     pub ground_msl_m: f64,
+    /// DEM terrain elevation in meters, ellipsoidal HAE above the WGS84 ellipsoid.
     pub ground_hae_m: f64,
 }
 
@@ -304,8 +339,11 @@ pub struct SwTerrainReference {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwLlaWgs84 {
+    /// Geodetic latitude in degrees (WGS84), within `[-90, 90]`.
     pub lat_deg: f64,
+    /// Geodetic longitude in degrees (WGS84).
     pub lon_deg: f64,
+    /// Ellipsoidal height above the WGS84 ellipsoid (HAE) in meters — never MSL or AGL.
     pub hae_m: f64,
 }
 
@@ -313,8 +351,11 @@ pub struct SwLlaWgs84 {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwEcef {
+    /// X coordinate in meters, toward the intersection of the equator and prime meridian.
     pub x_m: f64,
+    /// Y coordinate in meters, toward the equator at 90 degrees east longitude.
     pub y_m: f64,
+    /// Z coordinate in meters, toward the north pole along the WGS84 rotation axis.
     pub z_m: f64,
 }
 
@@ -322,8 +363,11 @@ pub struct SwEcef {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwNed {
+    /// North offset from the local origin in meters.
     pub n_m: f64,
+    /// East offset from the local origin in meters.
     pub e_m: f64,
+    /// Down offset from the local origin in meters — positive below the origin.
     pub d_m: f64,
 }
 
@@ -331,8 +375,11 @@ pub struct SwNed {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SwEnu {
+    /// East offset from the local origin in meters.
     pub e_m: f64,
+    /// North offset from the local origin in meters.
     pub n_m: f64,
+    /// Up offset from the local origin in meters — positive above the origin.
     pub u_m: f64,
 }
 

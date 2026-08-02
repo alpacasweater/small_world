@@ -22,13 +22,32 @@ enum GridFormat {
     Egm2008F32LeFortranSequential,
 }
 
+/// Identifies which Earth Gravitational Model a geoid grid was derived from.
+///
+/// The model determines the grid's resolution and on-disk encoding, and serves as provenance
+/// for any mean-sea-level height computed through it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EgmModel {
+    /// The NGA EGM96 15-arc-minute worldwide geoid grid (`WW15MGH.DAC`), stored as big-endian
+    /// `i16` values in centimeters.
     Egm96,
+    /// The NGA EGM2008 2.5-arc-minute worldwide geoid grid (`EGM2008_2_5.DAC`), stored as
+    /// little-endian `f32` values in meters framed by Fortran sequential record markers.
     Egm2008,
 }
 
+impl Display for EgmModel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            EgmModel::Egm96 => "EGM96",
+            EgmModel::Egm2008 => "EGM2008",
+        })
+    }
+}
+
 impl EgmModel {
+    /// The official NGA download URL for this model's interpolation grid, as published on
+    /// earth-info.nga.mil.
     pub fn dataset_url(self) -> &'static str {
         match self {
             EgmModel::Egm96 => {
@@ -40,6 +59,8 @@ impl EgmModel {
         }
     }
 
+    /// The filename the model's grid is published under by NGA (`WW15MGH.DAC` for EGM96,
+    /// `EGM2008_2_5.DAC` for EGM2008), used as the expected name when staging data locally.
     pub fn canonical_filename(self) -> &'static str {
         match self {
             EgmModel::Egm96 => "WW15MGH.DAC",
@@ -62,26 +83,44 @@ scripts/download_geoid_data.sh | bash -s -- --model {model}"
     }
 }
 
+/// Errors raised while opening, parsing, or querying an EGM geoid grid.
 #[derive(Debug)]
 pub enum EgmError {
+    /// An underlying filesystem read or seek on the grid file failed.
     Io(io::Error),
+    /// The requested latitude was not finite or fell outside [-90, 90] degrees; the payload is
+    /// the offending value in degrees.
     InvalidLatitude(f64),
+    /// The requested longitude was not finite; the payload is the offending value in degrees.
+    /// (Finite longitudes of any magnitude are accepted and wrapped into [0, 360).)
     InvalidLongitude(f64),
+    /// A direct grid lookup addressed a cell outside the grid's dimensions.
     InvalidIndex {
+        /// The requested row index (0 at 90° N latitude, increasing southward).
         row: usize,
+        /// The requested column index (0 at 0° E longitude, increasing eastward).
         col: usize,
+        /// The largest valid row index for this grid.
         max_row: usize,
+        /// The largest valid column index for this grid.
         max_col: usize,
     },
+    /// The dataset's byte length does not match the model's known grid layout, so the file is
+    /// truncated, corrupted, or not the expected NGA product.
     InvalidGridSize {
+        /// The model whose layout the data was checked against.
         model: EgmModel,
+        /// The byte length the model's grid layout requires.
         expected_bytes: usize,
+        /// The byte length actually found on disk (or implied by a corrupt record marker).
         actual_bytes: u64,
     },
     /// The grid file does not exist. Carries everything needed to fix it: the Display message
     /// includes the exact download command (and, for EGM96, the embedded-data alternative).
     DatasetMissing {
+        /// The model whose grid was being opened.
         model: EgmModel,
+        /// The path that was tried and found absent.
         path: PathBuf,
     },
 }
@@ -158,6 +197,12 @@ impl From<io::Error> for EgmError {
     }
 }
 
+/// A model-agnostic EGM geoid grid: a regular latitude/longitude raster of geoid undulations
+/// N in meters (HAE = MSL + N), read either lazily from the backing dataset file or entirely
+/// from memory.
+///
+/// Rows run from 90° N (row 0) southward to 90° S; columns run eastward from 0° E, wrapping at
+/// 360°. [`EGM96`] and [`EGM2008`] are thin model-specific wrappers around this type.
 #[derive(Debug)]
 pub struct EgmGrid {
     // `None` once the grid has been fully materialized in memory (e.g. via `from_bytes`); in
@@ -176,7 +221,13 @@ pub struct EgmGrid {
 }
 
 impl EgmGrid {
-    pub fn new(path: &Path, model: EgmModel) -> Result<Self, EgmError> {
+    /// Opens the dataset file at `path` as a grid for `model`, validating its size against the
+    /// model's known layout but reading no values yet: queries seek into the file on demand
+    /// until [`load_data`](Self::load_data) materializes the grid in memory. Fails with
+    /// [`EgmError::DatasetMissing`] (which explains how to fetch the data) when the file does
+    /// not exist, and with [`EgmError::InvalidGridSize`] when its length is wrong.
+    pub fn new(path: impl AsRef<Path>, model: EgmModel) -> Result<Self, EgmError> {
+        let path = path.as_ref();
         let file = File::open(path).map_err(|err| {
             if err.kind() == io::ErrorKind::NotFound {
                 EgmError::DatasetMissing {
@@ -236,26 +287,39 @@ impl EgmGrid {
         })
     }
 
-    pub fn egm96(path: &Path) -> Result<Self, EgmError> {
+    /// Opens the EGM96 15-arc-minute grid (`WW15MGH.DAC`) at `path`; shorthand for
+    /// [`EgmGrid::new`] with [`EgmModel::Egm96`].
+    pub fn egm96(path: impl AsRef<Path>) -> Result<Self, EgmError> {
         Self::new(path, EgmModel::Egm96)
     }
 
-    pub fn egm2008(path: &Path) -> Result<Self, EgmError> {
+    /// Opens the EGM2008 2.5-arc-minute grid (`EGM2008_2_5.DAC`) at `path`; shorthand for
+    /// [`EgmGrid::new`] with [`EgmModel::Egm2008`].
+    pub fn egm2008(path: impl AsRef<Path>) -> Result<Self, EgmError> {
         Self::new(path, EgmModel::Egm2008)
     }
 
+    /// The geoid model this grid implements — provenance for MSL values derived through it.
     pub fn model(&self) -> EgmModel {
         self.model
     }
 
+    /// The grid's latitude spacing in degrees between adjacent rows (0.25° for EGM96,
+    /// 2.5 arc-minutes for EGM2008).
     pub fn lat_step_deg(&self) -> f64 {
         self.lat_step_deg
     }
 
+    /// The grid's longitude spacing in degrees between adjacent columns (0.25° for EGM96,
+    /// 2.5 arc-minutes for EGM2008).
     pub fn lon_step_deg(&self) -> f64 {
         self.lon_step_deg
     }
 
+    /// Reads the entire dataset into memory so subsequent queries never touch the filesystem
+    /// (~8 MiB resident for EGM96, ~285 MiB for EGM2008, stored as `f64` per cell). A no-op
+    /// when the grid is already in memory,
+    /// e.g. after [`from_bytes`](Self::from_bytes) or a previous call.
     pub fn load_data(&mut self) -> Result<(), EgmError> {
         let Some(data_file) = self.data_file.as_ref() else {
             // No file handle means the grid was built fully in memory already.
@@ -277,10 +341,17 @@ impl EgmGrid {
         Ok(())
     }
 
+    /// Whether the full grid is resident in memory, either via [`load_data`](Self::load_data)
+    /// or because the grid was built with [`from_bytes`](Self::from_bytes); when `false`,
+    /// queries seek into the backing file on every lookup.
     pub fn is_loaded(&self) -> bool {
         !self.geoid.is_empty()
     }
 
+    /// The geoid undulation N in meters stored at grid cell (`row`, `col`), where row 0 is
+    /// 90° N (rows increase southward) and column 0 is 0° E (columns increase eastward). Reads
+    /// from memory when loaded, otherwise seeks into the backing file; fails with
+    /// [`EgmError::InvalidIndex`] when the cell is outside the grid.
     pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
         if row >= self.rows || col >= self.lon_bins {
             return Err(EgmError::InvalidIndex {
@@ -318,6 +389,9 @@ impl EgmGrid {
         }
     }
 
+    /// The (row, col) grid indices of the north-west corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees — the bracketing corner at or north/west of the point.
+    /// Longitude is wrapped into [0, 360) first.
     pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         let lon = self.normalize_lon(lon)?;
         self.validate_lat(lat)?;
@@ -325,6 +399,10 @@ impl EgmGrid {
         Ok((row, col))
     }
 
+    /// The (row, col) grid indices of the south-east corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees — the bracketing corner diagonally opposite
+    /// [`lower_indices`](Self::lower_indices). The column wraps across the antimeridian; the
+    /// row is clamped at the south pole.
     pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         let (lower_row, lower_col) = self.lower_indices(lat, lon)?;
         let upper_row = (lower_row + 1).min(self.rows - 1);
@@ -332,6 +410,9 @@ impl EgmGrid {
         Ok((upper_row, upper_col))
     }
 
+    /// The geoid undulation N in meters at (`lat`, `lon`) in degrees, using nearest-neighbor
+    /// lookup (the value of the closest grid node, no interpolation). N relates the vertical
+    /// datums as HAE = MSL + N, i.e. the height of the geoid above the WGS84 ellipsoid.
     pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         let lon = self.normalize_lon(lon)?;
         self.validate_lat(lat)?;
@@ -344,6 +425,9 @@ impl EgmGrid {
         self.read_geoid_value(row, col)
     }
 
+    /// The geoid undulation N in meters at (`lat`, `lon`) in degrees, bilinearly interpolated
+    /// from the four grid nodes bracketing the point (HAE = MSL + N). Smoother than
+    /// [`offset`](Self::offset); the usual accuracy/cost trade-off for geoid lookups.
     pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         let lon = self.normalize_lon(lon)?;
         self.validate_lat(lat)?;
@@ -362,6 +446,10 @@ impl EgmGrid {
         Ok(north * (1.0 - ty) + south * ty)
     }
 
+    /// The geoid undulation N in meters at (`lat`, `lon`) in degrees, bicubically interpolated
+    /// from the surrounding 4x4 block of grid nodes (HAE = MSL + N). Smoothest of the three
+    /// variants at 16 grid reads per query; columns wrap across the antimeridian and rows are
+    /// clamped at the poles.
     pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         let lon = self.normalize_lon(lon)?;
         self.validate_lat(lat)?;
@@ -518,13 +606,20 @@ fn dimensions_from_file_size(
     }
 }
 
+/// The EGM96 15-arc-minute geoid — NGA's `WW15MGH.DAC` grid of big-endian `i16` undulations in
+/// centimeters. Small enough (~2 MiB) to ship inside the binary via the `embedded-egm96`
+/// feature and [`EGM96::embedded`]; for higher resolution use [`EGM2008`].
 #[derive(Debug)]
 pub struct EGM96 {
     inner: EgmGrid,
 }
 
 impl EGM96 {
-    pub fn new(path: &Path) -> Result<Self, EgmError> {
+    /// Opens the EGM96 grid file (`WW15MGH.DAC`) at `path`, validating its size but deferring
+    /// all value reads to query time; call [`load_data`](Self::load_data) to bring the grid
+    /// fully into memory. A missing file fails with [`EgmError::DatasetMissing`], whose message
+    /// includes the download command.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, EgmError> {
         Ok(Self {
             inner: EgmGrid::egm96(path)?,
         })
@@ -554,30 +649,44 @@ impl EGM96 {
         Self::from_bytes(include_bytes!("../data/WW15MGH.DAC"))
     }
 
+    /// Reads the entire grid into memory (~8 MiB resident) so subsequent queries never touch
+    /// the filesystem; a no-op when the grid is already in memory.
     pub fn load_data(&mut self) -> Result<(), EgmError> {
         self.inner.load_data()
     }
 
+    /// The EGM96 geoid undulation N in meters at (`lat`, `lon`) in degrees, using
+    /// nearest-neighbor lookup. N relates the vertical datums as HAE = MSL + N.
     pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset(lat, lon)
     }
 
+    /// The EGM96 geoid undulation N in meters at (`lat`, `lon`) in degrees, bilinearly
+    /// interpolated from the four bracketing grid nodes (HAE = MSL + N).
     pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset_bilinear(lat, lon)
     }
 
+    /// The EGM96 geoid undulation N in meters at (`lat`, `lon`) in degrees, bicubically
+    /// interpolated from the surrounding 4x4 block of grid nodes (HAE = MSL + N).
     pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset_bicubic(lat, lon)
     }
 
+    /// The geoid undulation N in meters stored at grid cell (`row`, `col`), where row 0 is
+    /// 90° N and column 0 is 0° E; see [`EgmGrid::read_geoid_value`].
     pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
         self.inner.read_geoid_value(row, col)
     }
 
+    /// The (row, col) indices of the north-west corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees; see [`EgmGrid::lower_indices`].
     pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         self.inner.lower_indices(lat, lon)
     }
 
+    /// The (row, col) indices of the south-east corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees; see [`EgmGrid::upper_indices`].
     pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         self.inner.upper_indices(lat, lon)
     }
@@ -599,7 +708,11 @@ pub struct EGM2008 {
 }
 
 impl EGM2008 {
-    pub fn new(path: &Path) -> Result<Self, EgmError> {
+    /// Opens the EGM2008 grid file (`EGM2008_2_5.DAC`) at `path`, validating its size but
+    /// deferring all value reads to query time; call [`load_data`](Self::load_data) to bring
+    /// the grid fully into memory. A missing file fails with [`EgmError::DatasetMissing`],
+    /// whose message includes the download command.
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, EgmError> {
         Ok(Self {
             inner: EgmGrid::egm2008(path)?,
         })
@@ -620,30 +733,44 @@ impl EGM2008 {
         })
     }
 
+    /// Reads the entire grid into memory (~285 MiB resident) so subsequent queries never touch
+    /// the filesystem; a no-op when the grid is already in memory.
     pub fn load_data(&mut self) -> Result<(), EgmError> {
         self.inner.load_data()
     }
 
+    /// The EGM2008 geoid undulation N in meters at (`lat`, `lon`) in degrees, using
+    /// nearest-neighbor lookup. N relates the vertical datums as HAE = MSL + N.
     pub fn offset(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset(lat, lon)
     }
 
+    /// The EGM2008 geoid undulation N in meters at (`lat`, `lon`) in degrees, bilinearly
+    /// interpolated from the four bracketing grid nodes (HAE = MSL + N).
     pub fn offset_bilinear(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset_bilinear(lat, lon)
     }
 
+    /// The EGM2008 geoid undulation N in meters at (`lat`, `lon`) in degrees, bicubically
+    /// interpolated from the surrounding 4x4 block of grid nodes (HAE = MSL + N).
     pub fn offset_bicubic(&self, lat: f64, lon: f64) -> Result<f64, EgmError> {
         self.inner.offset_bicubic(lat, lon)
     }
 
+    /// The geoid undulation N in meters stored at grid cell (`row`, `col`), where row 0 is
+    /// 90° N and column 0 is 0° E; see [`EgmGrid::read_geoid_value`].
     pub fn read_geoid_value(&self, row: usize, col: usize) -> Result<f64, EgmError> {
         self.inner.read_geoid_value(row, col)
     }
 
+    /// The (row, col) indices of the north-west corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees; see [`EgmGrid::lower_indices`].
     pub fn lower_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         self.inner.lower_indices(lat, lon)
     }
 
+    /// The (row, col) indices of the south-east corner of the grid cell containing
+    /// (`lat`, `lon`) in degrees; see [`EgmGrid::upper_indices`].
     pub fn upper_indices(&self, lat: f64, lon: f64) -> Result<(usize, usize), EgmError> {
         self.inner.upper_indices(lat, lon)
     }
