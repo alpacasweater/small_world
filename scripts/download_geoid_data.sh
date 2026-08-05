@@ -10,7 +10,6 @@ SHA256_EGM2008=""
 HASH_LOG=""
 DOWNLOADED_EGM96="false"
 DOWNLOADED_EGM2008="false"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat <<'EOF'
@@ -106,6 +105,53 @@ sha256_file() {
 
 to_lower() {
   echo "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# The NGA egm-96interpolation archive ships only the ASCII WW15MGH.GRD (721 rows x 1441 columns,
+# metres; column 1441 duplicates column 1 at the dateline). small_world reads the compact binary
+# WW15MGH.DAC layout (721 x 1440 big-endian i16 centimetres), so the grid is converted here. The
+# converter is inlined so the script stays a self-contained one-liner when piped from a URL.
+convert_grd_to_dac() {
+  local input="$1"
+  local output="$2"
+  python3 - "$input" "$output" <<'PYEOF'
+import os
+import struct
+import sys
+
+ROWS = 721
+COLS_INPUT = 1441
+COLS_OUTPUT = 1440
+HEADER_VALUES = 6
+
+input_path, output_path = sys.argv[1], sys.argv[2]
+
+
+def token_stream(path):
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            yield from line.split()
+
+
+tokens = token_stream(input_path)
+header = [float(next(tokens)) for _ in range(HEADER_VALUES)]
+
+with open(output_path, "wb") as out:
+    for _row in range(ROWS):
+        row_values = [float(next(tokens)) for _ in range(COLS_INPUT)]
+        for value_m in row_values[:COLS_OUTPUT]:
+            value_cm = int(round(value_m * 100.0))
+            if value_cm < -32768 or value_cm > 32767:
+                raise RuntimeError(f"Value out of i16 range after cm conversion: {value_m}")
+            out.write(struct.pack(">h", value_cm))
+
+expected = ROWS * COLS_OUTPUT * 2
+actual = os.path.getsize(output_path)
+if actual != expected:
+    raise RuntimeError(f"Invalid output size for WW15MGH.DAC: expected {expected}, got {actual}")
+
+print(f"Converted {input_path} -> {output_path} ({actual} bytes)")
+PYEOF
 }
 
 find_largest_file() {
@@ -207,9 +253,7 @@ download_one() {
         echo "python3 is required to convert WW15MGH.GRD to WW15MGH.DAC" >&2
         exit 1
       fi
-      python3 "${SCRIPT_DIR}/convert_egm96_grd_to_dac.py" \
-        --input "$grid_file" \
-        --output "${OUT_DIR}/${canonical_name}"
+      convert_grd_to_dac "$grid_file" "${OUT_DIR}/${canonical_name}"
     else
       cp "$grid_file" "${OUT_DIR}/${canonical_name}"
     fi
